@@ -1,0 +1,11 @@
+# RadiCT Assistant — dependencies
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+sentence-transformers>=2.5.0
+chromadb>=0.4.24
+pyyaml>=6.0
+python-frontmatter>=1.1.0
+httpx>=0.27.0
+watchdog>=4.0.0
+pydantic>=2.6.0
+python-dotenv>=1.0.0
