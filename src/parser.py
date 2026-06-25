@@ -43,15 +43,39 @@ class ReferenceEntry:
         return block
 
 
-def _split_section(text: str, marker: str) -> tuple[str, str]:
-    """Разделяет текст по маркеру. Возвращает (до, после)."""
-    pattern = rf"^{re.escape(marker)}\s*\n"
-    match = re.search(pattern, text, re.MULTILINE)
-    if match:
-        before = text[:match.start()].strip()
-        after = text[match.end():].strip()
-        return before, after
+def _split_section(text: str, markers: list[str]) -> tuple[str, str]:
+    """
+    Разделяет текст по любому из маркеров.
+    Маркеры могут иметь опциональный ## префикс и/или двоеточие.
+    Возвращает (до, после).
+    """
+    for marker in markers:
+        # Экранируем спецсимволы, разрешаем опциональный ## и :
+        escaped = re.escape(marker)
+        # Паттерн: ^##? marker :? \s* \n
+        pattern = rf"^(?:##\s*)?{escaped}:?\s*\n"
+        match = re.search(pattern, text, re.MULTILINE)
+        if match:
+            before = text[:match.start()].strip()
+            after = text[match.end():].strip()
+            return before, after
     return text.strip(), ""
+
+
+def _strip_code_blocks(text: str) -> str:
+    """Удаляет markdown code-блоки (```...```) и заголовки (## Описание)."""
+    # Удаляем заголовки ## Описание, ## Заключение и т.д.
+    text = re.sub(r"^##\s+.*\s*$", "", text, flags=re.MULTILINE)
+    # Удаляем code-блоки ```...```
+    text = re.sub(r"^```[a-z]*\s*\n?", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
+    # Удаляем одиночные ``` в начале/конце
+    lines = text.strip().split("\n")
+    if lines and lines[0].strip() == "```":
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 def parse_file(filepath: str | Path) -> ReferenceEntry | None:
@@ -69,11 +93,17 @@ def parse_file(filepath: str | Path) -> ReferenceEntry | None:
         body = post.content
 
         # Разделяем: описание | заключение | рекомендовано
-        description, rest = _split_section(body, "Заключение:")
-        conclusion, recommendation = _split_section(rest, "Рекомендовано:")
+        # Маркеры в порядке приоритета (точные совпадения → вариации)
+        description, rest = _split_section(body, ["Заключение", "## Заключение"])
+        conclusion, recommendation = _split_section(rest, ["Рекомендовано", "## Рекомендации", "Рекомендации"])
 
         if not description or not conclusion:
             return None
+
+        # Чистим markdown-обёртки (code-блоки, заголовки)
+        description = _strip_code_blocks(description)
+        conclusion = _strip_code_blocks(conclusion)
+        recommendation = _strip_code_blocks(recommendation)
 
         return ReferenceEntry(
             filepath=str(filepath),
