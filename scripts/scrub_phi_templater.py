@@ -1,93 +1,245 @@
 #!/usr/bin/env python3
-"""
-Templater script: очистка YAML frontmatter текущей заметки от PHI.
+# ============================================================================
+#  scrub_phi_templater.py — ОЧИСТКА YAML ЗАМЕТКИ ИЗ OBSIDIAN (TEMPLATER)
+#  Проект: radi-ct-assistant
+#  Автор: Hermes Agent для Романа (@vegacepticon)
+# ============================================================================
+#
+#  НАЗНАЧЕНИЕ:
+#  ────────────────────────────────────────────────────────────────────────────
+#  Этот скрипт вызывается ПРЯМО из Obsidian (через плагин Templater).
+#  Он очищает YAML frontmatter ТЕКУЩЕЙ открытой заметки от конфиденциальных
+#  данных (PHI) — ФИО пациента, ID, учреждение, врач, дата и т.д.
+#
+#  Скрипт ТОЛЬКО чистит содержимое файла (YAML), а переименование файла
+#  в случайное число делает сам Templater через свою функцию tp.file.rename().
+#  Это важно: если бы Python переименовывал файл, Obsidian не узнал бы об
+#  этом и могла бы рассинхронизироваться внутренняя база (vault cache).
+#
+#  ЧТО ОСТАЁТСЯ В YAML:
+#    - анамнез, область, сравнение, экстренность, статус
+#  ЧТО УДАЛЯЕТСЯ:
+#    - id, пациент, возраст, учреждение, врач, дата, DLP, комплекс,
+#      платность, направлен и любые другие поля
+#  ТЕЛО ДОКУМЕНТА (описание, заключение, рекомендации) — НЕ ТРОГАЕТСЯ.
+#
+#  ТРЕБОВАНИЯ:
+#  ────────────────────────────────────────────────────────────────────────────
+#  1. Установлен Python 3.10+
+#  2. Установлена библиотека PyYAML:
+#       pip install pyyaml
+#  3. Установлен плагин Templater в Obsidian:
+#       Settings → Community plugins → Browse → "Templater" → Install → Enable
+#
+#  НАСТРОЙКА TEMPLATER:
+#  ────────────────────────────────────────────────────────────────────────────
+#
+#  ── ШАГ 1: Положите этот скрипт в удобное место ──
+#  Например: C:\Users\Роман\Documents\Obsidian\Scripts\scrub_phi_templater.py
+#  Или на macOS: ~/Documents/Obsidian/Scripts/scrub_phi_templater.py
+#
+#  ── ШАГ 2: Включите системные команды в Templater ──
+#  Obsidian → Settings → Templater:
+#    ☑ Enable system commands
+#
+#  ── ШАГ 3: Создайте шаблон для очистки ──
+#  Создайте новую заметку в папке шаблонов Templater, например:
+#    Templates/scrub_phi.md
+#
+#  Вставьте в этот шаблон следующий код (ВНИМАНИЕ: замените путь к скрипту!):
+#
+#    <%*
+#    // Получаем абсолютный путь к текущему файлу
+#    // tp.file.path() возвращает полный путь на диске
+#    // (например: C:\Users\Роман\Documents\Vault\Протоколы\note.md)
+#    const filePath = tp.file.path();
+#
+#    // Запускаем Python-скрипт очистки
+#    // execSync выполняет команду синхронно и ждёт завершения
+#    // ЗАМЕНИТЕ путь ниже на реальный путь к скрипту!
+#    const { execSync } = require('child_process');
+#    execSync(`python3 "C:/Users/Роман/Documents/Obsidian/Scripts/
+#      scrub_phi_templater.py" "${filePath}"`);
+#
+#    // Переименовываем файл в случайное число
+#    // Math.floor(Math.random() * 9000000) + 100000 → число 100000..9999999
+#    // tp.file.rename() принимает только новое имя без расширения
+#    await tp.file.rename(String(Math.floor(Math.random() * 9000000)
+#      + 100000));
+#    %>
+#
+#  ── ШАГ 4: Назначьте горячую клавишу ──
+#  Obsidian → Settings → Hotkeys:
+#    Найдите "Templater: Create new note from template"
+#    или "Templater: Open templates"
+#    Назначьте удобное сочетание клавиш
+#
+#  ── АЛЬТЕРНАТИВНЫЙ СПОСОБ (через User System Command) ──
+#  Если не хотите писать require() в шаблоне, можно настроить через UI:
+#
+#  1. Obsidian → Settings → Templater → User System Command Functions:
+#       Нажмите "+ Add"
+#       Name: scrub_phi
+#       Command: python3 "C:/path/to/scrub_phi_templater.py" "<% tp.file.path() %>"
+#
+#  2. В шаблоне используйте:
+#       <%* await tp.user.scrub_phi(); %>
+#       <%* await tp.file.rename(String(Math.floor(Math.random() * 9000000) + 100000)); %>
+#
+#  WORKFLOW (КАК ПОЛЬЗОВАТЬСЯ):
+#  ────────────────────────────────────────────────────────────────────────────
+#  1. Откройте протокол в Obsidian (с полным YAML — пациент, врач, учреждение)
+#  2. Внесите данные в медицинскую базу вашего учреждения
+#  3. Вызовите шаблон очистки (через горячую клавишу или Command Palette)
+#  4. Скрипт:
+#       — Удалит из YAML все конфиденциальные поля
+#       — Оставит только: анамнез, область, сравнение, экстренность, статус
+#       — Templater переименует файл в "4827361.md"
+#  5. Файл полностью анонимизирован — можно хранить в базе примеров
+# ============================================================================
 
-Скрипт ONLY чистит YAML содержимое файла (in-place).
-Переименование файла делает Templater через tp.file.rename().
-
-Вариант 1 — User System Command (Templater Settings → User System Command Functions):
-    Name: scrub_phi
-    Command: python3 "/path/to/scrub_phi_templater.py" "<% tp.file.path() %>"
-    Template: <%* await tp.user.scrub_phi(); await tp.file.rename(String(Math.floor(Math.random() * 9000000) + 100000)); %>
-
-Вариант 2 — через require('child_process') в <%*> блоке (без настроек):
-    <%*
-    const { execSync } = require('child_process');
-    const filePath = tp.file.path();  // абсолютный путь по умолчанию
-    execSync(`python3 "/path/to/scrub_phi_templater.py" "${filePath}"`);
-    await tp.file.rename(String(Math.floor(Math.random() * 9000000) + 100000));
-    %>
-
-Скрипт:
-1. Читает текущий файл
-2. Оставляет в YAML только: анамнез, область, сравнение, экстренность, статус
-3. Перезаписывает файл на месте (content only, без переименования)
-
-Требуется: pip install pyyaml
-"""
-import re
-import sys
-from pathlib import Path
+import re   # для регулярных выражений (поиск --- разделителей в файле)
+import sys  # для sys.argv (аргументы командной строки) и sys.stderr (вывод ошибок)
+from pathlib import Path  # для работы с путями к файлам
 
 try:
-    import yaml
+    import yaml  # библиотека PyYAML — для чтения и записи YAML
 except ImportError:
-    print("ERROR: PyYAML not installed. Run: pip install pyyaml", file=sys.stderr)
+    # Если PyYAML не установлен — выводим понятное сообщение
+    print("ОШИБКА: PyYAML не установлен.\nУстановите: pip install pyyaml", file=sys.stderr)
     sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# ПОЛЯ YAML, КОТОРЫЕ ОСТАВЛЯЕМ
+# ---------------------------------------------------------------------------
+# Порядок в этом списке = порядок полей в выводе.
+# Всё, чего здесь нет — будет удалено.
 KEY_ORDER = ["анамнез", "область", "сравнение", "экстренность", "статус"]
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: parse_frontmatter — РАЗДЕЛЯЕТ ФАЙЛ НА YAML + ТЕЛО
+# ---------------------------------------------------------------------------
+# Принимает текст .md файла, возвращает:
+#   metadata — словарь с полями YAML ({"пациент": "Иванов", "область": ["ГМ"], ...})
+#   body     — текст после второго --- (описание, заключение, рекомендации)
 def parse_frontmatter(text: str) -> tuple[dict, str]:
+    """
+    Разделяет .md файл на YAML-метаданные и тело.
+
+    Как работает:
+    1. Регулярка ищет блок --- в начале файла
+    2. Если находит — парсит YAML через yaml.safe_load()
+    3. Возвращает (словарь_метаданных, тело_после_yaml)
+    4. Если frontmatter нет — возвращает ({}, весь_текст)
+    """
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
     if match:
-        raw_yaml = match.group(1)
-        body = match.group(2)
+        raw_yaml = match.group(1)  # текст между --- и --- (это YAML)
+        body = match.group(2)      # текст после второго --- (тело протокола)
         try:
+            # Превращаем YAML-текст в словарь Python
             metadata = yaml.safe_load(raw_yaml) or {}
         except yaml.YAMLError:
+            # Если YAML повреждён — не падаем, возвращаем пустой словарь
             metadata = {}
         return metadata, body
     return {}, text
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: scrub_metadata — УДАЛЯЕТ КОНФИДЕНЦИАЛЬНЫЕ ПОЛЯ
+# ---------------------------------------------------------------------------
+# Принимает полный словарь метаданных, возвращает НОВЫЙ словарь
+# только с разрешёнными полями.
+#
+# ВХОД: {"тип": "заключение", "пациент": "Иванов И.И.", "область": ["ГМ"],
+#         "врач": "Шульга Р.В.", "дата": "2026-06-02", "статус": true, ...}
+# ВЫХОД: {"анамнез": null, "область": ["ГМ"], "сравнение": false,
+#         "экстренность": false, "статус": true}
 def scrub_metadata(metadata: dict) -> dict:
+    """Оставляет только разрешённые ключи, удаляет всё остальное."""
     return {k: metadata[k] for k in KEY_ORDER if k in metadata}
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: build_frontmatter — СОБИРАЕТ YAML ИЗ СЛОВАРЯ
+# ---------------------------------------------------------------------------
+# Принимает очищенный словарь, возвращает YAML-строку с --- разделителями.
+#
+# ВХОД: {"область": ["ГМ"], "статус": true}
+# ВЫХОД: "---\nобласть:\n- ГМ\nстатус: true\n---\n\n"
 def build_frontmatter(metadata: dict) -> str:
+    """Превращает словарь обратно в YAML-текст с разделителями ---."""
     if not metadata:
-        return ""
+        return ""  # если метаданных нет — frontmatter не нужен
     yaml_text = yaml.dump(
         metadata,
-        allow_unicode=True,
-        default_flow_style=False,
-        sort_keys=False,
-        width=1000,
+        allow_unicode=True,       # русские буквы без \uXXXX
+        default_flow_style=False,  # блочный стиль (с переносами), не инлайн
+        sort_keys=False,          # сохраняем порядок ключей как в словаре
+        width=1000,               # длинные строки не переносятся
     )
     return f"---\n{yaml_text}---\n\n"
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: scrub_inplace — ОЧИЩАЕТ ФАЙЛ НА МЕСТЕ
+# ---------------------------------------------------------------------------
+# Это главная функция. Она:
+# 1. Читает файл (текущая заметка Obsidian)
+# 2. Разделяет на YAML + тело (parse_frontmatter)
+# 3. Чистит YAML от PHI (scrub_metadata)
+# 4. Собирает файл заново (build_frontmatter)
+# 5. Перезаписывает файл на диске
+#
+# Функция НЕ переименовывает файл — это делает Templater через
+# tp.file.rename(), чтобы Obsidian корректно отследил изменение.
 def scrub_inplace(filepath: Path) -> None:
     """Очищает YAML frontmatter файла на месте. Не переименовывает."""
+
+    # Шаг 1: читаем содержимое файла
     text = filepath.read_text(encoding="utf-8")
+
+    # Шаг 2: разделяем на YAML-метаданные и тело протокола
     metadata, body = parse_frontmatter(text)
+
+    # Шаг 3: удаляем конфиденциальные поля
     cleaned_meta = scrub_metadata(metadata)
+
+    # Шаг 4: собираем новый YAML-блок из очищенных данных
     frontmatter_str = build_frontmatter(cleaned_meta)
+
+    # Шаг 5: объединяем очищенный YAML + нетронутое тело протокола
     output_text = frontmatter_str + body
+
+    # Шаг 6: перезаписываем файл
     filepath.write_text(output_text, encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# ТОЧКА ВХОДА ПРИ ЗАПУСКЕ ИЗ КОМАНДНОЙ СТРОКИ
+# ---------------------------------------------------------------------------
+# Templater вызывает этот скрипт так:
+#   python3 scrub_phi_templater.py "/путь/к/файлу.md"
+#
+# Скрипт получает путь к файлу как первый аргумент (sys.argv[1]),
+# вызывает scrub_inplace() и завершает работу.
 if __name__ == "__main__":
+    # Проверяем, что передан путь к файлу
     if len(sys.argv) < 2:
-        print("Usage: scrub_phi_templater.py <path_to_note.md>", file=sys.stderr)
+        print("Использование: scrub_phi_templater.py <путь_к_заметке.md>", file=sys.stderr)
         sys.exit(1)
 
+    # Получаем путь из аргументов командной строки
     note_path = Path(sys.argv[1])
+
+    # Проверяем, что файл существует
     if not note_path.exists():
-        print(f"ERROR: File not found: {note_path}", file=sys.stderr)
+        print(f"ОШИБКА: Файл не найден: {note_path}", file=sys.stderr)
         sys.exit(1)
 
+    # Очищаем файл
     scrub_inplace(note_path)
-    print(f"Scrubbed: {note_path.name}")
+    print(f"Очищено: {note_path.name}")

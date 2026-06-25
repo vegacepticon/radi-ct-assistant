@@ -1,55 +1,131 @@
 #!/usr/bin/env python3
-"""
-Очистка .md файлов протоколов КТ от конфиденциальных данных (PHI).
+# ============================================================================
+#  scrub_phi.py — ОЧИСТКА ПРОТОКОЛОВ КТ ОТ КОНФИДЕНЦИАЛЬНЫХ ДАННЫХ (PHI)
+#  Проект: radi-ct-assistant
+#  Автор: Hermes Agent для Романа (@vegacepticon)
+# ============================================================================
+#
+#  ЧТО ДЕЛАЕТ СКРИПТ:
+#  ────────────────────────────────────────────────────────────────────────────
+#  Берёт .md файлы протоколов КТ (с YAML frontmatter) и удаляет из них
+#  все конфиденциальные данные: ФИО пациента, ID исследования, название
+#  учреждения, ФИО врача, дату исследования, дозу (DLP) и т.д.
+#
+#  В YAML остаются ТОЛЬКО 5 полей:
+#    - анамнез      (клинический контекст, не содержит PHI)
+#    - область      (например: ГМ, ОГК, ОБП)
+#    - сравнение    (true/false — есть ли предыдущее исследование)
+#    - экстренность (true/false)
+#    - статус       (true = качественный пример, идёт в few-shot базу)
+#
+#  Все остальные поля (id, пациент, возраст, учреждение, врач, дата, DLP,
+#  комплекс, платность, направлен и т.д.) — ПОЛНОСТЬЮ УДАЛЯЮТСЯ.
+#
+#  Тело документа (описание, заключение, рекомендации) НЕ ТРОГАЕТСЯ.
+#
+#  Файл переименовывается в <случайное_число>.md — полная анонимизация.
+#  Например: "Иванов Иван Иванович_ ГМ от 02.06.2026.md" → "4827361.md"
+#
+#  КАК ИСПОЛЬЗОВАТЬ:
+#  ────────────────────────────────────────────────────────────────────────────
+#
+#  Вариант 1 — обработать папку с сырыми протоколами:
+#    python3 scrub_phi.py --input /путь/к/сырым/протоколам --output /путь/к/чистым
+#
+#  Вариант 2 — обработать один файл:
+#    python3 scrub_phi.py --input /путь/к/файлу.md --output /путь/к/чистым
+#
+#  Вариант 3 — перезаписать файлы на месте (не создавать копии):
+#    python3 scrub_phi.py --input /путь/к/папке --inplace
+#
+#  ТРЕБОВАНИЯ:
+#  ────────────────────────────────────────────────────────────────────────────
+#  Установить PyYAML:
+#    pip install pyyaml
+#  (на macOS: pip3 install pyyaml, или brew install python-yaml)
+# ============================================================================
 
-Оставляет в YAML frontmatter только: анамнез, область, сравнение, экстренность, статус.
-Все остальные поля удаляются.
-Файл переименовывается в <случайное_число>.md (полная анонимизация).
-
-Usage:
-    python scripts/scrub_phi.py --input /path/to/raw --output data/references/clean
-    python scripts/scrub_phi.py --input /path/to/file.md --output data/references/clean
-"""
-import argparse
-import random
-import re
-from pathlib import Path
+import argparse   # для разбора аргументов командной строки (--input, --output)
+import random     # для генерации случайного имени файла
+import re         # для регулярных выражений (поиск YAML frontmatter в тексте)
+from pathlib import Path  # для работы с путями к файлам
 
 try:
-    import yaml
+    import yaml  # библиотека PyYAML — для чтения и записи YAML
 except ImportError:
-    raise SystemExit("PyYAML required: pip install pyyaml")
+    raise SystemExit(
+        "Ошибка: PyYAML не установлен.\n"
+        "Установите: pip install pyyaml"
+    )
 
 
-# Поля YAML, которые ОСТАВЛЯЕМ (всё остальное удаляется)
-KEEP_KEYS = {"анамнез", "область", "сравнение", "экстренность", "статус"}
-
-
-def parse_frontmatter(text: str) -> tuple[dict, str, str]:
-    """
-    Разделяет файл на (metadata_dict, body, frontmatter_delimiter).
-    Возвращает (metadata, body, raw_yaml_or_empty).
-    """
-    # Поддержка --- и +++ (Obsidian использует ---)
-    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
-    if match:
-        raw_yaml = match.group(1)
-        body = match.group(2)
-        try:
-            metadata = yaml.safe_load(raw_yaml) or {}
-        except yaml.YAMLError:
-            metadata = {}
-        return metadata, body, raw_yaml
-
-    return {}, text, ""
-
-
-# Канонический порядок ключей в выводе
+# ---------------------------------------------------------------------------
+# СПИСОК ПОЛЕЙ, КОТОРЫЕ ОСТАВЛЯЕМ В YAML
+# ---------------------------------------------------------------------------
+# Всё, чего нет в этом списке, будет удалено.
+# Порядок в этом списке определяет порядок полей в выводе.
 KEY_ORDER = ["анамнез", "область", "сравнение", "экстренность", "статус"]
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: parse_frontmatter — РАЗБИРАЕТ .md ФАЙЛ НА YAML + ТЕЛО
+# ---------------------------------------------------------------------------
+# Obsidian .md файлы с frontmatter выглядят так:
+#
+#   ---
+#   тип: заключение
+#   пациент: Иванов Иван Иванович
+#   область:
+#     - ГМ
+#   ---
+#
+#   МСКТ-исследование выполнено по стандартной программе...
+#
+# Эта функция отделяет YAML-блок (между --- и ---) от тела документа.
+# Возвращает словарь с метаданными и текст тела.
+def parse_frontmatter(text: str) -> tuple[dict, str, str]:
+    """
+    Разделяет содержимое .md файла на (метаданные, тело, сырой YAML).
+
+    Что происходит:
+    1. Регулярное выражение ищет блок между --- в начале файла
+    2. Если находит — парсит содержимое как YAML через yaml.safe_load()
+    3. Возвращает словарь метаданных и текст после второго ---
+    4. Если frontmatter нет — возвращает пустой словарь и весь текст
+    """
+    # Шаблон: ^--- в начале файла, затем любой текст (.*?) до \n---, затем остаток
+    # re.DOTALL — точка (.) совпадает и с переносами строк
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
+    if match:
+        raw_yaml = match.group(1)  # текст между --- и --- (это YAML)
+        body = match.group(2)      # текст после второго --- (тело протокола)
+        try:
+            # yaml.safe_load превращает YAML-текст в словарь Python
+            # например: "область:\n  - ГМ" → {"область": ["ГМ"]}
+            metadata = yaml.safe_load(raw_yaml) or {}
+        except yaml.YAMLError:
+            # Если YAML повреждён (неправильные отступы и т.д.) —
+            # не падаем, просто возвращаем пустой словарь
+            metadata = {}
+        return metadata, body, raw_yaml
+
+    # Если frontmatter нет — весь текст это тело, метаданные пустые
+    return {}, text, ""
+
+
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: scrub_metadata — ОЧИЩАЕТ МЕТАДАННЫЕ ОТ PHI
+# ---------------------------------------------------------------------------
+# Принимает словарь со всеми полями (пациент, врач, id, дата...),
+# возвращает новый словарь только с разрешёнными полями.
+#
+# Например:
+#   ВХОД: {"тип": "заключение", "пациент": "Иванов И.И.", "область": ["ГМ"],
+#          "врач": "Шульга Р.В.", "дата": "2026-06-02", "статус": true, ...}
+#   ВЫХОД: {"анамнез": null, "область": ["ГМ"], "сравнение": false,
+#           "экстренность": false, "статус": true}
 def scrub_metadata(metadata: dict) -> dict:
-    """Оставляет только разрешённые ключи в каноническом порядке."""
+    """Оставляет только разрешённые ключи в заданном порядке."""
     cleaned = {}
     for key in KEY_ORDER:
         if key in metadata:
@@ -57,10 +133,32 @@ def scrub_metadata(metadata: dict) -> dict:
     return cleaned
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: build_frontmatter — СОБИРАЕТ YAML ИЗ СЛОВАРЯ
+# ---------------------------------------------------------------------------
+# Принимает очищенный словарь и превращает обратно в YAML-текст
+# с разделителями --- для Obsidian.
 def build_frontmatter(metadata: dict) -> str:
-    """Собирает YAML frontmatter из dict."""
+    """
+    Превращает словарь в YAML-строку с разделителями.
+
+    Например:
+      {"область": ["ГМ"], "статус": true}
+    превращается в:
+      ---
+      область:
+      - ГМ
+      статус: true
+      ---
+    """
     if not metadata:
-        return ""
+        return ""  # если словарь пустой — frontmatter не нужен
+
+    # yaml.dump превращает словарь Python в YAML-текст
+    # allow_unicode=True — русские буквы без \uXXXX
+    # default_flow_style=False — блочный стиль (с переносами строк), не инлайн
+    # sort_keys=False — сохраняем порядок ключей как в словаре
+    # width=1000 — длинные строки не переносятся (важно для медицинских текстов)
     yaml_text = yaml.dump(
         metadata,
         allow_unicode=True,
@@ -71,43 +169,62 @@ def build_frontmatter(metadata: dict) -> str:
     return f"---\n{yaml_text}---\n\n"
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: generate_filename — ГЕНЕРИРУЕТ СЛУЧАЙНОЕ ИМЯ ФАЙЛА
+# ---------------------------------------------------------------------------
+# Создаёт путь вида /папка/4827361.md
+# Проверяет, что файла с таким именем ещё нет (защита от коллизий).
 def generate_filename(directory: Path) -> Path:
-    """
-    Генерирует путь с случайным числом-именем.
-    Проверяет коллизии.
-    """
+    """Генерирует путь со случайным числом-именем. Проверяет коллизии."""
     while True:
-        num = random.randint(100000, 9999999)
+        num = random.randint(100000, 9999999)  # 6-значное число
         candidate = directory / f"{num}.md"
         if not candidate.exists():
             return candidate
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: scrub_file — ОБРАБАТЫВАЕТ ОДИН ФАЙЛ
+# ---------------------------------------------------------------------------
+# Основная логика:
+# 1. Читает .md файл
+# 2. Разделяет на YAML + тело (parse_frontmatter)
+# 3. Чистит YAML от PHI (scrub_metadata)
+# 4. Собирает очищенный YAML обратно (build_frontmatter)
+# 5. Записывает результат:
+#    - inplace=True → перезаписывает исходный файл
+#    - inplace=False → создаёт новый файл со случайным именем
 def scrub_file(filepath: Path, output_dir: Path | None = None, inplace: bool = False) -> bool:
-    """
-    Очищает один файл.
-    inplace=True — перезаписывает исходный файл (для Templater сценария).
-    inplace=False — создаёт новый файл в output_dir со случайным именем.
-    """
+    """Очищает один файл. Возвращает True если успешно."""
     try:
+        # Шаг 1: читаем содержимое файла
         text = filepath.read_text(encoding="utf-8")
+
+        # Шаг 2: разделяем на YAML-метаданные и тело протокола
         metadata, body, _ = parse_frontmatter(text)
+
+        # Шаг 3: удаляем все конфиденциальные поля из метаданных
         cleaned_meta = scrub_metadata(metadata)
+
+        # Шаг 4: собираем новый YAML-блок из очищенных данных
         frontmatter_str = build_frontmatter(cleaned_meta)
 
+        # Шаг 5: объединяем очищенный YAML + нетронутое тело
         output_text = frontmatter_str + body
 
+        # Шаг 6: записываем результат
         if inplace:
-            output_path = filepath
-            output_path.write_text(output_text, encoding="utf-8")
+            # Перезаписываем исходный файл
+            filepath.write_text(output_text, encoding="utf-8")
         else:
+            # Создаём новый файл со случайным именем
             if output_dir is None:
-                raise ValueError("output_dir required when inplace=False")
+                raise ValueError("Нужен output_dir когда inplace=False")
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = generate_filename(output_dir)
             output_path.write_text(output_text, encoding="utf-8")
 
-        action = "scrubbed (inplace)" if inplace else f"→ {output_path.name}"
+        action = "переписан на месте" if inplace else f"→ {output_path.name}"
         print(f"  [OK] {filepath.name} {action}")
         return True
 
@@ -116,60 +233,64 @@ def scrub_file(filepath: Path, output_dir: Path | None = None, inplace: bool = F
         return False
 
 
+# ---------------------------------------------------------------------------
+# ФУНКЦИЯ: main — ТОЧКА ВХОДА ПРИ ЗАПУСКЕ ИЗ КОМАНДНОЙ СТРОКИ
+# ---------------------------------------------------------------------------
 def main():
+    # Настраиваем аргументы командной строки
     parser = argparse.ArgumentParser(
-        description="Очистка .md файлов протоколов КТ от PHI"
+        description="Очистка .md файлов протоколов КТ от конфиденциальных данных (PHI)"
     )
     parser.add_argument(
         "--input",
         required=True,
-        help="Файл .md или папка с исходными файлами",
+        help="Файл .md или папка с исходными протоколами",
     )
     parser.add_argument(
         "--output",
         default="data/references/clean",
-        help="Папка для очищенных файлов (по умолчанию data/references/clean)",
+        help="Папка для очищенных файлов (по умолчанию: data/references/clean)",
     )
     parser.add_argument(
         "--inplace",
         action="store_true",
-        help="Перезаписать исходный файл (не создаёт копию)",
+        help="Перезаписать исходные файлы (не создавать копии со случайным именем)",
     )
     args = parser.parse_args()
 
     input_path = Path(args.input)
 
+    # Определяем список файлов для обработки
     if input_path.is_file():
+        # Один файл
         files = [input_path]
-        if not args.inplace:
-            output_dir = Path(args.output)
-        else:
-            output_dir = None
+        output_dir = None if args.inplace else Path(args.output)
     elif input_path.is_dir():
+        # Папка — ищем все .md файлы рекурсивно (включая подпапки)
         files = sorted(input_path.rglob("*.md"))
-        if not args.inplace:
-            output_dir = Path(args.output)
-        else:
-            output_dir = None
+        output_dir = None if args.inplace else Path(args.output)
     else:
-        print(f"Input not found: {input_path}")
+        print(f"Файл или папка не найдена: {input_path}")
         return
 
+    # Выводим информацию о запуске
     if not args.inplace:
-        print(f"Input: {input_path}")
-        print(f"Output: {output_dir}")
+        print(f"Вход:  {input_path}")
+        print(f"Выход: {output_dir}")
     else:
-        print(f"Mode: inplace (modifying original files)")
-    print(f"Files: {len(files)}")
+        print(f"Режим: перезапись на месте (inplace)")
+    print(f"Файлов к обработке: {len(files)}")
     print()
 
+    # Обрабатываем каждый файл
     cleaned = 0
     for filepath in files:
         if scrub_file(filepath, output_dir, inplace=args.inplace):
             cleaned += 1
 
-    print(f"\nDone: {cleaned}/{len(files)} files processed")
+    print(f"\nГотово: {cleaned}/{len(files)} файлов обработано")
 
 
+# --- Запуск скрипта --------------------------------------------------------
 if __name__ == "__main__":
     main()
