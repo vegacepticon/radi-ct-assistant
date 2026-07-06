@@ -1,8 +1,12 @@
 """
 Сборка промпта с few-shot примерами.
 """
-from .retriever import RetrievalResult
+from typing import TYPE_CHECKING
+
 from .config import PROMPTS_DIR
+
+if TYPE_CHECKING:
+    from .retriever import RetrievalResult
 
 
 def load_system_prompt(mode: str = "fast") -> str:
@@ -39,7 +43,7 @@ def _default_system_prompt(mode: str) -> str:
 
 def build_prompt(
     description: str,
-    references: list[RetrievalResult],
+    references: list["RetrievalResult"],
     mode: str = "fast",
     clinical_context: str = "",
 ) -> str:
