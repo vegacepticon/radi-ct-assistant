@@ -596,6 +596,81 @@ python3 scripts/radi_ct_api.py promote CASE_ID
 RADI_CT_API_URL=http://127.0.0.1:8000 python3 scripts/radi_ct_api.py health
 ```
 
+### Telegram/Hermes workflow wrapper
+
+`scripts/radi_ct_workflow.py` — слой выше HTTP CLI. Он принимает человекочитаемое Telegram/Hermes-сообщение, разбирает короткие инициаторы и metadata, вызывает локальный FastAPI через `radi_ct_api.py`, а в ответ печатает Markdown, удобный для отправки обратно в чат.
+
+Это не Telegram bot и не привязка к Telegram API. Hermes может запускать wrapper локально, передавая текст сообщения через файл или stdin.
+
+Проверка API:
+
+```bash
+python3 scripts/radi_ct_workflow.py health
+```
+
+Создание draft из сообщения:
+
+```bash
+python3 scripts/radi_ct_workflow.py message message.md
+```
+
+Пример `message.md`:
+
+```text
+РКТ заключение
+Область: ОГК
+Контекст: синтетический обезличенный пример
+Сравнение: да
+Режим: fast
+---
+Описание: синтетический очаг S8 правого легкого уменьшился. Плевра свободна.
+
+Черновик ассистента:
+Уменьшение очага S8 правого легкого.
+```
+
+Если блок `Черновик ассистента:` указан, backend сохраняет case без вызова LLM/retrieval. Если блока нет, backend использует обычный generate path.
+
+Поддерживаемые инициаторы:
+
+| Инициатор | Task |
+|---|---|
+| `РКТ заключение` | `conclusion` |
+| `РКТ описание` | `description` |
+| `РКТ описание + заключение` | `description_and_conclusion` |
+
+Сохранить финальный вариант Романа и feedback:
+
+```bash
+python3 scripts/radi_ct_workflow.py correct CASE_ID --final final.md --feedback feedback.md --tag incomplete_stable_findings_list --create-lesson-candidate
+```
+
+Принять draft без правок:
+
+```bash
+python3 scripts/radi_ct_workflow.py accept CASE_ID
+```
+
+Посмотреть cases и lesson candidates:
+
+```bash
+python3 scripts/radi_ct_workflow.py cases --status corrected
+python3 scripts/radi_ct_workflow.py case CASE_ID
+python3 scripts/radi_ct_workflow.py lessons
+```
+
+Явно сохранить accepted/corrected case в reference base:
+
+```bash
+python3 scripts/radi_ct_workflow.py promote CASE_ID
+```
+
+Для shell-интеграций можно получить raw JSON вместо Markdown:
+
+```bash
+python3 scripts/radi_ct_workflow.py --json message message.md
+```
+
 ### Тестирование
 
 Все тесты используют синтетические тексты без PHI.
