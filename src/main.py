@@ -125,6 +125,37 @@ class LessonInfo(BaseModel):
     content: str
 
 
+class CaseSummary(BaseModel):
+    case_id: str
+    status: str
+    task: str
+    area: list[str]
+    created_at: str
+    path: str
+
+
+class CaseDetail(BaseModel):
+    case_id: str
+    created_at: str
+    task: str
+    input_type: str
+    area: list[str]
+    clinical_context: str
+    comparison: bool
+    status: str
+    references_used: list[str]
+    input_text: str
+    assistant_draft: str
+    roman_final: str
+    feedback: list[str]
+    error_tags: list[str]
+
+
+class PromoteResponse(BaseModel):
+    case_id: str
+    reference_path: str
+
+
 # --- Helpers ---
 
 # Назначение: нормализовать feedback из строки или массива строк.
@@ -143,6 +174,28 @@ def _normalize_feedback(feedback: str | list[str]) -> list[str]:
             line = line[2:].strip()
         items.append(line)
     return items
+
+
+# Назначение: преобразовать внутренний CaseRecord в API DTO.
+# Вход: CaseRecord из FeedbackStore.load_case().
+# Выход: CaseDetail без дополнительных чтений с диска.
+def _case_detail_from_record(record: Any) -> CaseDetail:
+    return CaseDetail(
+        case_id=record.metadata.case_id,
+        created_at=record.metadata.created_at,
+        task=record.metadata.task,
+        input_type=record.metadata.input_type,
+        area=record.metadata.area,
+        clinical_context=record.metadata.clinical_context,
+        comparison=record.metadata.comparison,
+        status=record.metadata.status,
+        references_used=record.metadata.references_used,
+        input_text=record.input_text,
+        assistant_draft=record.assistant_draft,
+        roman_final=record.roman_final,
+        feedback=record.feedback,
+        error_tags=record.error_tags,
+    )
 
 
 # --- Endpoints ---
@@ -294,6 +347,44 @@ async def list_lessons():
         LessonInfo(path=str(path), content=path.read_text(encoding="utf-8"))
         for path in sorted(store.lesson_candidates_dir.glob("*.md"))
     ]
+
+
+@app.get("/api/cases", response_model=list[CaseSummary])
+async def list_cases(status: str | None = None):
+    """Показывает список локальных learning-loop cases."""
+    if status is not None and status not in {"draft", "accepted", "corrected"}:
+        raise HTTPException(400, "status must be one of: draft, accepted, corrected")
+
+    store = get_feedback_store()
+    return [CaseSummary(**item) for item in store.list_cases(status=status)]
+
+
+@app.get("/api/cases/{case_id}", response_model=CaseDetail)
+async def get_case(case_id: str):
+    """Возвращает полный локальный case: input, draft, final, feedback, tags."""
+    store = get_feedback_store()
+    try:
+        record = store.load_case(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Case not found: {case_id}")
+    return _case_detail_from_record(record)
+
+
+@app.post("/api/references/promote/{case_id}", response_model=PromoteResponse)
+async def promote_case_to_reference(case_id: str):
+    """Явно переносит accepted/corrected case в few-shot reference base.
+
+    Promotion может упасть с 400, если case ещё draft, нет финального текста
+    или базовый PHI guard нашёл прямой идентификатор.
+    """
+    store = get_feedback_store()
+    try:
+        path = store.promote_to_reference(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Case not found: {case_id}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return PromoteResponse(case_id=case_id, reference_path=str(path))
 
 
 @app.post("/api/reindex", response_model=ReindexResponse)

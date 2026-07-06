@@ -55,12 +55,106 @@ class LearningLoopApiTest(unittest.TestCase):
             events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(events[0]["case_id"], case_id)
 
+    def test_cases_detail_and_promote_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADI_CT_BASE_DIR"] = tmp
+            client = TestClient(app)
+
+            draft_response = client.post(
+                "/api/draft",
+                json={
+                    "input_text": "Описание: синтетический малый очаг S3 левого легкого без динамики.",
+                    "assistant_draft": "Очаг S3 левого легкого без динамики.",
+                    "area": ["ОГК"],
+                    "clinical_context": "синтетический пример",
+                },
+            )
+            self.assertEqual(draft_response.status_code, 200)
+            case_id = draft_response.json()["case_id"]
+
+            correct_response = client.post(
+                f"/api/correct/{case_id}",
+                json={
+                    "roman_final": "Очаг S3 левого легкого без динамики.",
+                    "feedback": ["Формулировка приемлема."],
+                    "error_tags": [],
+                },
+            )
+            self.assertEqual(correct_response.status_code, 200)
+
+            cases_response = client.get("/api/cases")
+            self.assertEqual(cases_response.status_code, 200)
+            cases = cases_response.json()
+            statuses = {item["status"] for item in cases if item["case_id"] == case_id}
+            self.assertIn("draft", statuses)
+            self.assertIn("corrected", statuses)
+
+            filtered_response = client.get("/api/cases", params={"status": "corrected"})
+            self.assertEqual(filtered_response.status_code, 200)
+            self.assertTrue(all(item["status"] == "corrected" for item in filtered_response.json()))
+
+            invalid_filter_response = client.get("/api/cases", params={"status": "archived"})
+            self.assertEqual(invalid_filter_response.status_code, 400)
+
+            detail_response = client.get(f"/api/cases/{case_id}")
+            self.assertEqual(detail_response.status_code, 200)
+            detail = detail_response.json()
+            self.assertEqual(detail["case_id"], case_id)
+            self.assertEqual(detail["status"], "corrected")
+            self.assertEqual(detail["roman_final"], "Очаг S3 левого легкого без динамики.")
+            self.assertEqual(detail["feedback"], ["Формулировка приемлема."])
+
+            promote_response = client.post(f"/api/references/promote/{case_id}")
+            self.assertEqual(promote_response.status_code, 200)
+            reference_path = Path(promote_response.json()["reference_path"])
+            self.assertTrue(reference_path.exists())
+            reference_text = reference_path.read_text(encoding="utf-8")
+            self.assertIn("статус: true", reference_text)
+            self.assertIn("Заключение:", reference_text)
+
+    def test_promote_draft_and_phi_guard_return_400(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADI_CT_BASE_DIR"] = tmp
+            client = TestClient(app)
+
+            draft_response = client.post(
+                "/api/draft",
+                json={
+                    "input_text": "Описание: синтетическое описание без идентификаторов.",
+                    "assistant_draft": "Синтетическое заключение.",
+                },
+            )
+            self.assertEqual(draft_response.status_code, 200)
+            draft_case_id = draft_response.json()["case_id"]
+            draft_promote_response = client.post(f"/api/references/promote/{draft_case_id}")
+            self.assertEqual(draft_promote_response.status_code, 400)
+
+            phi_draft_response = client.post(
+                "/api/draft",
+                json={
+                    "input_text": "Описание: синтетическое описание без идентификаторов.",
+                    "assistant_draft": "Синтетическое заключение.",
+                },
+            )
+            self.assertEqual(phi_draft_response.status_code, 200)
+            phi_case_id = phi_draft_response.json()["case_id"]
+            correct_response = client.post(
+                f"/api/correct/{phi_case_id}",
+                json={"roman_final": "Пациент Иванов Иван Иванович. Синтетическое заключение."},
+            )
+            self.assertEqual(correct_response.status_code, 200)
+            phi_promote_response = client.post(f"/api/references/promote/{phi_case_id}")
+            self.assertEqual(phi_promote_response.status_code, 400)
+            self.assertIn("Potential PHI", phi_promote_response.text)
+
     def test_accept_missing_case_returns_404(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["RADI_CT_BASE_DIR"] = tmp
             client = TestClient(app)
             response = client.post("/api/accept/missing-case", json={})
             self.assertEqual(response.status_code, 404)
+            detail_response = client.get("/api/cases/missing-case")
+            self.assertEqual(detail_response.status_code, 404)
 
     def test_correct_empty_final_returns_400(self):
         with tempfile.TemporaryDirectory() as tmp:
