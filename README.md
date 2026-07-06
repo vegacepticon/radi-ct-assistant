@@ -39,6 +39,11 @@ Few-shot retrieval: динамически подтягивать релеван
 
 🚧 Прототип / архитектурные наброски. В активной разработке.
 
+## Документация
+
+- [Learning loop](docs/LEARNING_LOOP.md)
+- [Telegram ↔ Hermes workflow](docs/TELEGRAM_HERMES_WORKFLOW.md)
+
 ## План
 
 1. **Скрипт очистки .md файлов** от конфиденциальных данных (PHI)
