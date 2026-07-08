@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from .prompt_builder import build_prompt
 from .llm_client import generate
 from .parser import parse_directory
-from .config import BASE_DIR, REFERENCES_DIR
+from .config import BASE_DIR, RAG_BACKEND, REFERENCE_VAULT_DIR, REFERENCES_DIR
 from .case_schema import InputType, TaskName
 from .feedback_store import FeedbackStore
 
@@ -50,9 +50,9 @@ def get_indexer() -> Any:
 def get_retriever() -> Any:
     global _retriever
     if _retriever is None:
-        from .retriever import Retriever
+        from .rag import create_retriever
 
-        _retriever = Retriever()
+        _retriever = create_retriever()
     return _retriever
 
 
@@ -74,6 +74,20 @@ class GenerateResponse(BaseModel):
 class ReindexResponse(BaseModel):
     indexed: int
     message: str
+    backend: str = ""
+    chunks: int = 0
+
+class RagStatusResponse(BaseModel):
+    backend: str
+    available: bool
+    command: str = ""
+    vault: str = ""
+    total: int = 0
+    indexed: int = 0
+    chunks: int = 0
+    model: str = ""
+    version: str = ""
+    error: str = ""
 
 
 class ReferenceInfo(BaseModel):
@@ -388,20 +402,32 @@ async def promote_case_to_reference(case_id: str):
 
 
 @app.post("/api/reindex", response_model=ReindexResponse)
-async def reindex():
-    """Перестраивает векторный индекс из базы референсов."""
-    indexer = get_indexer()
-    count = indexer.index_directory()
-    return ReindexResponse(
-        indexed=count,
-        message=f"Проиндексировано {count} записей",
-    )
+async def reindex(force: bool = False):
+    """Перестраивает активный RAG index: OHS reference vault или legacy Chroma."""
+    from .rag import reindex_active_backend
+
+    try:
+        result = reindex_active_backend(force=force)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"RAG reindex error: {e}")
+    return ReindexResponse(**result)
+
+
+@app.get("/api/rag/status", response_model=RagStatusResponse)
+async def get_rag_status():
+    """Показывает готовность активного RAG backend-а."""
+    from .rag import rag_status
+
+    return RagStatusResponse(**rag_status())
 
 
 @app.get("/api/references")
 async def list_references():
-    """Список всех референсов в базе."""
-    entries = parse_directory(REFERENCES_DIR)
+    """Список всех референсов в активной Markdown-базе."""
+    reference_dir = REFERENCE_VAULT_DIR if RAG_BACKEND in {"obsidian_hybrid", "ohs", "obsidian"} else REFERENCES_DIR
+    entries = parse_directory(reference_dir)
     return [
         ReferenceInfo(
             filepath=e.filepath,

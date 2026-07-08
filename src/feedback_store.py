@@ -30,7 +30,7 @@ from .case_schema import (
     now_moscow_iso,
     short_text_hash,
 )
-from .config import BASE_DIR, REFERENCES_DIR
+from .config import AUTO_REINDEX_REFERENCES, BASE_DIR, REFERENCE_VAULT_DIR, REFERENCES_DIR
 
 CASE_SECTIONS = {
     "input": "## Input",
@@ -81,6 +81,7 @@ class FeedbackStore:
             self.feedback_dir,
             self.lesson_candidates_dir,
             self.references_dir,
+            self.reference_vault_dir,
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
@@ -118,9 +119,17 @@ class FeedbackStore:
 
     @property
     def references_dir(self) -> Path:
+        """Legacy reference directory kept for compatibility with older tooling."""
         if self.base_dir == BASE_DIR:
             return REFERENCES_DIR
         return self.base_dir / "data" / "references"
+
+    @property
+    def reference_vault_dir(self) -> Path:
+        """Obsidian-like vault used by the OHS RAG backend."""
+        if self.base_dir == BASE_DIR:
+            return REFERENCE_VAULT_DIR
+        return self.base_dir / "data" / "reference-vault"
 
     # Назначение: создать новый case_id с датой и порядковым номером за день.
     # Вход: текущее содержимое data/cases.
@@ -282,10 +291,33 @@ class FeedbackStore:
         self.assert_no_direct_identifiers(reference_text)
         self.ensure_reference_frontmatter_safe(record.metadata)
 
-        path = self.references_dir / f"{case_id}.md"
+        path = self.reference_vault_dir / f"{case_id}.md"
         path.write_text(reference_text, encoding="utf-8")
+
+        # Legacy mirror: старый Chroma/parse_directory path оставляем рабочим,
+        # но основным источником RAG становится Obsidian-like reference vault.
+        legacy_path = self.references_dir / f"{case_id}.md"
+        legacy_path.write_text(reference_text, encoding="utf-8")
+
+        if AUTO_REINDEX_REFERENCES:
+            self.reindex_reference_vault_best_effort()
+
         self.append_feedback_event(record, promoted_to_reference=True, promoted_to_skill=False)
         return path
+
+    # Назначение: best-effort обновить OHS index после сохранения нового reference.
+    # Вход: текущий reference_vault_dir.
+    # Выход: ничего; ошибки не ломают accept/correct, потому что reference уже сохранён.
+    def reindex_reference_vault_best_effort(self) -> None:
+        try:
+            from .ohs import ohs_reindex
+
+            ohs_reindex(vault_dir=self.reference_vault_dir, force=False)
+        except Exception as e:
+            # Promotion не должен падать только из-за временной недоступности OHS.
+            # Пользователь увидит readiness через /api/rag/status или сможет
+            # вручную вызвать /api/reindex после исправления окружения.
+            print(f"[feedback_store] OHS reindex skipped/failed: {e}")
 
     # Назначение: прочитать case из любой статусной папки.
     # Вход: case_id.

@@ -5,6 +5,8 @@ data/references/*
 !data/references/.gitkeep
 data/index/*
 !data/index/.gitkeep
+data/reference-vault/*
+!data/reference-vault/.gitkeep
 data/cases/*
 !data/cases/.gitkeep
 !data/cases/drafts/
