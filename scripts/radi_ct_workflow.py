@@ -21,6 +21,11 @@ Telegram/Hermes workflow-wrapper для RadiCT Assistant.
     4. Сохранить исправление Романа:
         python3 scripts/radi_ct_workflow.py correct CASE_ID --final final.md --feedback feedback.md --tag incomplete_stable_findings_list
 
+    В Telegram/Hermes workflow accept/correct по умолчанию также пытаются
+    сохранить case в reference base. Backend выполняет PHI guard и отклоняет
+    promotion, если находит прямые идентификаторы. Для редкого исключения есть
+    флаг --no-save-as-reference.
+
 Формат сообщения для команды `message`:
 
     РКТ заключение
@@ -51,8 +56,9 @@ Telegram/Hermes workflow-wrapper для RadiCT Assistant.
 Безопасность:
     Wrapper сам не обезличивает текст. Он только передает текст в локальный API.
     Не отправляйте реальные идентификаторы пациента во внешние LLM/API.
-    Сохранение в reference base должно быть только явным: `promote CASE_ID` или
-    `--save-as-reference`; backend дополнительно выполняет базовый PHI guard.
+    В Telegram/Hermes workflow сохранение в reference base включено по
+    умолчанию для accept/correct, потому что это часть радиологического
+    learning loop Романа. Backend дополнительно выполняет базовый PHI guard.
 """
 from __future__ import annotations
 
@@ -388,19 +394,19 @@ def cmd_message(args: argparse.Namespace) -> None:
 
 
 # Назначение: команда `accept` — принять draft без правок.
-# Вход: case_id и флаг --save-as-reference.
+# Вход: case_id и флаг --no-save-as-reference.
 # Выход: Markdown с новым статусом.
 def cmd_accept(args: argparse.Namespace) -> None:
     data = radi_ct_api.request_json(
         "POST",
         f"/api/accept/{args.case_id}",
-        payload={"save_as_reference": args.save_as_reference},
+        payload={"save_as_reference": not args.no_save_as_reference},
     )
     print_result(data, args.json, format_action_response(data, "RadiCT case принят"))
 
 
 # Назначение: команда `correct` — сохранить финальный вариант и feedback.
-# Вход: case_id, --final, optional --feedback/--tag/--save-as-reference.
+# Вход: case_id, --final, optional --feedback/--tag/--no-save-as-reference.
 # Выход: Markdown с новым статусом.
 def cmd_correct(args: argparse.Namespace) -> None:
     feedback = radi_ct_api.parse_feedback_items(read_text(args.feedback)) if args.feedback else []
@@ -408,7 +414,7 @@ def cmd_correct(args: argparse.Namespace) -> None:
         "roman_final": read_text(args.final),
         "feedback": feedback,
         "error_tags": args.tag or [],
-        "save_as_reference": args.save_as_reference,
+        "save_as_reference": not args.no_save_as_reference,
         "create_lesson_candidate": args.create_lesson_candidate,
     }
     data = radi_ct_api.request_json("POST", f"/api/correct/{args.case_id}", payload=payload)
@@ -475,7 +481,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     accept = subparsers.add_parser("accept", help="Accept draft case")
     accept.add_argument("case_id")
-    accept.add_argument("--save-as-reference", action="store_true")
+    accept.add_argument(
+        "--no-save-as-reference",
+        action="store_true",
+        help="Do not auto-promote accepted case to reference base",
+    )
     accept.set_defaults(func=cmd_accept)
 
     correct = subparsers.add_parser("correct", help="Correct case")
@@ -483,7 +493,11 @@ def build_parser() -> argparse.ArgumentParser:
     correct.add_argument("--final", required=True, help="Final text file, or '-' for stdin")
     correct.add_argument("--feedback", help="Feedback text file")
     correct.add_argument("--tag", action="append", help="Error tag, can be repeated")
-    correct.add_argument("--save-as-reference", action="store_true")
+    correct.add_argument(
+        "--no-save-as-reference",
+        action="store_true",
+        help="Do not auto-promote corrected case to reference base",
+    )
     correct.add_argument("--create-lesson-candidate", action="store_true")
     correct.set_defaults(func=cmd_correct)
 

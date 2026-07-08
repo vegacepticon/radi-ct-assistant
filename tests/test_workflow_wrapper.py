@@ -96,6 +96,53 @@ class WorkflowWrapperTest(unittest.TestCase):
         data = json.loads(stdout.getvalue())
         self.assertEqual(data["case_id"], "case-json")
 
+    def test_accept_auto_promotes_by_default_and_can_be_disabled(self):
+        calls = []
+
+        def fake_request_json(method, path, payload=None, query=None):
+            calls.append({"method": method, "path": path, "payload": payload})
+            return {
+                "case_id": "case-accept",
+                "status": "accepted",
+                "path": "/tmp/case-accept.md",
+                "saved_as_reference": (payload or {})["save_as_reference"],
+            }
+
+        with patch("scripts.radi_ct_workflow.radi_ct_api.request_json", fake_request_json), patch(
+            "sys.stdout", new=io.StringIO()
+        ):
+            radi_ct_workflow.main(["accept", "case-accept"])
+            radi_ct_workflow.main(["accept", "case-accept", "--no-save-as-reference"])
+
+        self.assertEqual(calls[0]["payload"], {"save_as_reference": True})
+        self.assertEqual(calls[1]["payload"], {"save_as_reference": False})
+
+    def test_correct_auto_promotes_by_default_and_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            final_path = Path(tmp) / "final.md"
+            final_path.write_text("Синтетическое финальное заключение.", encoding="utf-8")
+            calls = []
+
+            def fake_request_json(method, path, payload=None, query=None):
+                calls.append({"method": method, "path": path, "payload": payload})
+                return {
+                    "case_id": "case-correct",
+                    "status": "corrected",
+                    "path": "/tmp/case-correct.md",
+                    "saved_as_reference": (payload or {})["save_as_reference"],
+                }
+
+            with patch("scripts.radi_ct_workflow.radi_ct_api.request_json", fake_request_json), patch(
+                "sys.stdout", new=io.StringIO()
+            ):
+                radi_ct_workflow.main(["correct", "case-correct", "--final", str(final_path)])
+                radi_ct_workflow.main(
+                    ["correct", "case-correct", "--final", str(final_path), "--no-save-as-reference"]
+                )
+
+        self.assertEqual(calls[0]["payload"]["save_as_reference"], True)
+        self.assertEqual(calls[1]["payload"]["save_as_reference"], False)
+
     def test_empty_message_returns_value_error(self):
         with self.assertRaises(ValueError):
             radi_ct_workflow.parse_workflow_message("   \n")
