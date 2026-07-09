@@ -15,6 +15,7 @@ Few-shot retrieval: динамически подтягивать релеван
 - **Reference vault** — локальная Obsidian-like Markdown-база `data/reference-vault/` с парами «описание → заключение».
 - **Obsidian Hybrid Search RAG** — гибридный поиск `obsidian-hybrid-search`: BM25 + semantic search по reference vault.
 - **Learning loop** — accepted/corrected cases автоматически превращаются в reference examples после PHI guard.
+- **Session capture** — обычные Telegram/Hermes консультации можно одним вызовом `capture-session` сохранять как corrected case + reference, если Роман прислал финальный вариант.
 - **Retrieval-сервис** — FastAPI на Raspberry Pi, хранит cases/references и отдаёт локальный RAG-контекст для Hermes.
 - **Hermes-only draft workflow** — backend не вызывает внешние LLM: Hermes формирует черновик в Telegram-сессии и сохраняет его через `/api/draft` как обязательный `assistant_draft`.
 - **Reference lifecycle** — старые/сомнительные примеры можно помечать `deprecated`, `needs_review`, `rejected`; retrieval использует только `active`/`gold` и учитывает качество/новизну.
