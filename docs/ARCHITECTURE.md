@@ -2,212 +2,98 @@
 
 ## Обзор
 
-Сервис принимает на вход описательную часть КТ-исследования (текст + метаданные), находит релевантные примеры из базы радиолога, собирает промпт с few-shot примерами и отправляет в LLM API. На выходе — заключение в стиле врача, опционально с диффдиагностическим рядом.
+`radi-ct-assistant` — локальный store/RAG/lifecycle сервис для работы с CT reference base. Он **не генерирует медицинский текст через внешние LLM API**. Генерацию черновика выполняет Hermes Agent в текущей Telegram/agent-сессии, используя локально найденные references как контекст. Backend сохраняет `assistant_draft`, feedback, финальные правки и reference lifecycle.
+
+```text
+Telegram / Hermes
+  → входное описание + метаданные
+  → локальный retrieval по data/reference-vault/
+  → Hermes формирует черновик
+  → POST /api/draft с обязательным assistant_draft
+  → accept/correct
+  → PHI guard
+  → reference lifecycle + OHS reindex
+```
 
 ## Компоненты
 
-### 1. База данных (Reference Store)
+### 1. Reference vault
 
-**Формат файлов:** `.md` с YAML frontmatter
+Файлы хранятся как Markdown с YAML frontmatter в `data/reference-vault/`. В retrieval участвуют только обезличенные, проверенные examples:
 
 ```yaml
 ---
-тип: заключение
-исследование: КТ
-анамнез:
-id: "6247498"           # будет удалено при очистке
+анамнез: null
 область:
-  - КТА ГМ
-учреждение: Second Opinion
-врач: Шульга Р.В.
-дата: 2026-06-17
-комплекс: false
-сравнение: false
+  - ОГК
+сравнение: true
 экстренность: false
-статус: true             # true = качественный, идёт в few-shot
+статус: true
+reference_status: active
+quality: standard
+style_version: 2026-07
+created_at: 2026-07
+updated_at: 2026-07
 ---
 
-МСКТ-исследование выполнено по стандартной программе...
-
-СРЕДИННЫЕ СТРУКТУРЫ:
-Не смещены.
-...
+Описание...
 
 Заключение:
-Признаков объемно-очаговой патологии...
-
-Рекомендовано:
-Консультация направившего специалиста.
+Финальный вариант...
 ```
 
-**Парсинг:**
-- YAML frontmatter → метаданные (область, врач, статус, дата)
-- Тело до `Заключение:` → описание (для embedding)
-- После `Заключение:` → заключение (few-shot target)
-- После `Рекомендовано:` → рекомендации (few-shot target)
+`deprecated`, `needs_review` и `rejected` исключаются из retrieval. `gold` и более качественные/новые examples получают приоритет.
 
-**Хранение:**
-- Файлы в папке `data/references/`
-- Автоиндексация при добавлении/изменении файлов (watchdog)
-- Векторный индекс в `data/index/` (ChromaDB или numpy)
+### 2. Retrieval
 
-### 2. Embedding & Retrieval
+Основной backend — Obsidian Hybrid Search (`obsidian-hybrid-search`) по отдельному reference vault. OHS запускается локально с `local:Xenova/multilingual-e5-small`; переменные `OPENAI_*` принудительно удаляются из окружения OHS-процесса, чтобы не уйти во внешний embedding API.
 
-**Модель:** `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
-- Мультиязычная (русский OK)
-- Лёгкая (~120MB), работает на RPi без GPU
-- 384-мерные векторы
+Старый Chroma backend остаётся только как legacy retrieval fallback через `RAG_BACKEND=chroma`; он не связан с генерацией.
 
-**Процесс индексации:**
-1. Парсинг всех .md файлов из `data/references/`
-2. Фильтр: `статус: true` → только качественные
-3. Embedding описательной части каждого файла
-4. Сохранение в ChromaDB с метаданными (область, врач, дата)
+### 3. Hermes-only generation
 
-**Retrieval:**
-1. Входное описание → embedding
-2. Фильтр по `область` (match с входными метаданными)
-3. Cosine similarity top-k (k=3..5)
-4. Возврат пар «описание → заключение» как few-shot примеры
+Backend не содержит `/api/generate` и не содержит `llm_client.py`.
 
-### 3. Промпт-сборка
+Генерация происходит так:
 
-**Структура промпта:**
+1. Hermes получает запрос Романа.
+2. Hermes/инструменты получают локальные references/RAG context.
+3. Hermes формирует черновик описания/заключения.
+4. Hermes сохраняет case через `/api/draft`, передавая `assistant_draft`.
 
-```
-[SYSTEM]
-Ты — радиолог. Твоя задача — сформировать заключение КТ на основе 
-описательной части. Следуй стилю и структуре примеров точно.
-...
+Если `assistant_draft` отсутствует, `/api/draft` возвращает ошибку. Это архитектурный guardrail.
 
-[FEW-SHOT EXAMPLES]
---- Пример 1 ---
-Описание: {ref_description_1}
-Заключение: {ref_conclusion_1}
+## FastAPI endpoints
 
---- Пример 2 ---
-Описание: {ref_description_2}
-Заключение: {ref_conclusion_2}
+| Endpoint | Назначение |
+|---|---|
+| `GET /api/health` | Проверка сервиса |
+| `POST /api/draft` | Сохранить Hermes-generated draft case; `assistant_draft` обязателен |
+| `POST /api/accept/{case_id}` | Принять draft без правок |
+| `POST /api/correct/{case_id}` | Сохранить финальный вариант Романа и feedback |
+| `GET /api/cases` | Список cases |
+| `GET /api/cases/{case_id}` | Детали case |
+| `POST /api/references/promote/{case_id}` | Перенести accepted/corrected case в reference base после PHI guard |
+| `GET /api/references/lifecycle` | Список references с lifecycle metadata |
+| `PATCH /api/references/lifecycle/{reference_id}` | Изменить `reference_status`, `quality`, `style_version` |
+| `POST /api/reindex` | Обновить индекс references |
+| `GET /api/rag/status` | Статус RAG backend |
 
-...
+## Безопасность
 
-[INPUT]
-Описание: {input_description}
-Заключение:
-```
-
-**Два режима:**
-
-| Режим | Системный промпт | Диффдиагноз | Веб-ресерч |
-|---|---|---|---|
-| Быстрый | "Сформируй заключение в стиле примеров" | Нет | Нет |
-| Аналитический | + "Если находки неоднозначны, построй диффдиагноз с обоснованием" | Да, отдельным блоком | Да (опц.) |
-
-### 4. API (FastAPI)
-
-```
-POST /api/generate
-  Body: {
-    description: str,
-    area: str,              # "КТА ГМ", "КТ ОГК", etc.
-    mode: "fast" | "analytical",
-    clinical_context: str?  # возраст, пол, задача (опц., но желательно)
-  }
-  Response: {
-    conclusion: str,
-    differential: str?,     # только в analytical режиме
-    references: [str],      # ID использованных few-shot примеров
-  }
-
-POST /api/reindex
-  Перестроить векторный индекс
-
-GET /api/references
-  Список всех файлов в базе
-
-POST /api/references/add
-  Добавить новый .md файл в базу
-```
-
-### 5. LLM Integration
-
-**Провайдеры (OpenAI-compatible API):**
-
-| Модель | API endpoint | Цена | Приоритет |
-|---|---|---|---|
-| DeepSeek V3 | `https://api.deepseek.com/v1` | ~$0.27/1M | 1 (основная) |
-| Claude Haiku 3.5 | `https://api.anthropic.com/v1` | ~$0.25/$1.25 | 2 (резерв) |
-| Gemini 2.5 Flash | `https://generativelanguage.googleapis.com` | ~$0.075/1M | 3 (бюджет) |
-
-**Параметры:**
-- temperature: 0.3 (воспроизводимость > креативность)
-- max_tokens: 2000
-- timeout: 60s
-
-### 6. Очистка данных (PHI Scrubber)
-
-Два скрипта для очистки от конфиденциальных данных:
-
-**`scripts/scrub_phi.py`** — массовая очистка базы:
-- Оставляет в YAML только: `анамнез`, `область`, `сравнение`, `экстренность`, `статус`
-- Все остальные поля удаляются (`id`, `пациент`, `возраст`, `учреждение`, `врач`, `дата`, `DLP` и т.д.)
-- Переименовывает файл в `<случайное_число>.md` (полная анонимизация)
-- Тело документа (описание, заключение, рекомендации) сохраняется без изменений
-- Вывод в `data/references/clean/`
-- Режим `--inplace` для перезаписи исходного файла
-
-**`scripts/scrub_phi_templater.py`** — одиночная очистка из Obsidian Templater:
-- Вызывается на текущем открытом файле
-- Очищает YAML по тем же правилам
-- Переименовывает файл в `<случайное_число>.md`
-- Удаляет оригинальный файл, создаёт анонимизированный
+- `working-base-syncthing` и реальные patient data не используются как source.
+- В reference vault должны попадать только обезличенные examples.
+- Promotion выполняет PHI guard.
+- Backend не отправляет медицинский текст во внешние LLM API.
+- Exact dates в lifecycle metadata не используются; применяется `YYYY-MM`.
 
 ## Развёртывание
 
-```
-radi-ct-assistant/
-├── README.md
-├── docs/
-│   └── ARCHITECTURE.md          ← этот файл
-├── src/
-│   ├── main.py                  # FastAPI app
-│   ├── parser.py                # .md → metadata + description + conclusion
-│   ├── indexer.py               # embedding + ChromaDB
-│   ├── retriever.py             # vector search + filtering
-│   ├── prompt_builder.py        # сборка промпта с few-shot
-│   ├── llm_client.py            # API вызовы
-│   └── config.py                # настройки
-├── scripts/
-│   ├── scrub_phi.py             # очистка от конфиденциальных данных
-│   ├── index_base.py            # ручная индексация базы
-│   └── add_reference.py         # добавление нового файла
-├── data/
-│   ├── references/              # .md файлы базы
-│   └── index/                   # векторный индекс
-├── prompts/
-│   ├── system_fast.txt          # системный промпт — быстрый режим
-│   └── system_analytical.txt    # системный промпт — аналитический режим
-├── requirements.txt
-└── .env.example
+Сервис работает как user-level systemd unit на Raspberry Pi:
+
+```bash
+systemctl --user status radi-ct-assistant.service
+python3 scripts/radi_ct_workflow.py health
 ```
 
-## Интеграция
-
-### Этап 1: Telegram (через Hermes)
-- Роман пишет описание → Hermes вызывает API → возвращает заключение
-- Быстрая итерация промпта
-
-### Этап 2: Веб-интерфейс
-- Простая HTML страница на RPi (текстовое поле + кнопка)
-- Доступ через локальную сеть / Tailscale
-
-### Этап 3: RadiProtocol
-- API endpoint вызывается из приложения
-- Интеграция в workflow радиолога
-
-## Ограничения и риски
-
-- **Качество диффдиагноза** сильно зависит от клинического контекста (возраст, пол, задача). Без него — поверхностный.
-- **Embedding модель MiniLM** — компромисс для RPi. Если качество retrieval недостаточное, можно перейти на более тяжёлую модель (e.g., `distiluse-base-multilingual-cased-v2`) или внешний API (OpenAI embeddings).
-- **База 1000 качественных пар** — достаточно для few-shot, но мало для fine-tuning. Если позже захочется fine-tuning, нужно ~5000+ пар.
-- **RPi ресурсы** — MiniLM embedding занимает ~2-5 сек на запрос, ChromaDB поиск <1 сек. LLM вызов — основная задержка (5-15 сек).
+Основной локальный путь: `/home/hermes/projects/radi-ct-assistant`.

@@ -51,6 +51,9 @@ class WorkflowWrapperTest(unittest.TestCase):
 Область: ОГК
 ---
 Описание: синтетическое описание.
+
+Черновик ассистента:
+Синтетическое заключение.
 """,
                 encoding="utf-8",
             )
@@ -83,7 +86,10 @@ class WorkflowWrapperTest(unittest.TestCase):
     def test_message_command_json_mode_prints_raw_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             message_path = Path(tmp) / "message.md"
-            message_path.write_text("РКТ заключение\n---\nОписание: синтетическое описание.", encoding="utf-8")
+            message_path.write_text(
+                "РКТ заключение\n---\nОписание: синтетическое описание.\n\nЧерновик ассистента:\nТекст",
+                encoding="utf-8",
+            )
 
             def fake_request_json(method, path, payload=None, query=None):
                 return {"case_id": "case-json", "draft": "Текст", "path": "/tmp/case-json.md"}
@@ -95,6 +101,18 @@ class WorkflowWrapperTest(unittest.TestCase):
 
         data = json.loads(stdout.getvalue())
         self.assertEqual(data["case_id"], "case-json")
+
+    def test_message_command_requires_assistant_draft_before_api_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            message_path = Path(tmp) / "message.md"
+            message_path.write_text("РКТ заключение\n---\nОписание: синтетическое описание.", encoding="utf-8")
+
+            with patch("scripts.radi_ct_workflow.radi_ct_api.request_json") as request_json:
+                with self.assertRaises(SystemExit) as cm:
+                    radi_ct_workflow.main(["message", str(message_path)])
+
+        self.assertIn("assistant draft", str(cm.exception))
+        request_json.assert_not_called()
 
     def test_accept_auto_promotes_by_default_and_can_be_disabled(self):
         calls = []

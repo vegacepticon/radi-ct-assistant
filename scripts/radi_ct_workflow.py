@@ -15,7 +15,9 @@ Telegram/Hermes workflow-wrapper для RadiCT Assistant.
     2. Проверить доступность:
         python3 scripts/radi_ct_workflow.py health
 
-    3. Создать draft из Telegram/Hermes-сообщения:
+    3. Сохранить draft из Telegram/Hermes-сообщения. В Hermes-only режиме
+       сообщение должно содержать блок "Черновик ассистента:" или отдельный
+       файл --assistant-draft:
         python3 scripts/radi_ct_workflow.py message message.md
 
     4. Сохранить исправление Романа:
@@ -36,7 +38,7 @@ Telegram/Hermes workflow-wrapper для RadiCT Assistant.
     ---
     Описание: ...
 
-Если Hermes уже подготовил черновик и нужно только сохранить case без вызова LLM:
+Hermes должен подготовить черновик; wrapper только сохраняет case без вызова LLM:
 
     РКТ заключение
     Область: ОГК
@@ -55,7 +57,8 @@ Telegram/Hermes workflow-wrapper для RadiCT Assistant.
 
 Безопасность:
     Wrapper сам не обезличивает текст. Он только передает текст в локальный API.
-    Не отправляйте реальные идентификаторы пациента во внешние LLM/API.
+    Backend не отправляет данные во внешние LLM/API. Всё равно не сохраняйте
+    реальные идентификаторы пациента в long-term reference base.
     В Telegram/Hermes workflow сохранение в reference base включено по
     умолчанию для accept/correct, потому что это часть радиологического
     learning loop Романа. Backend дополнительно выполняет базовый PHI guard.
@@ -385,6 +388,11 @@ def cmd_health(args: argparse.Namespace) -> None:
 def cmd_message(args: argparse.Namespace) -> None:
     workflow_message = parse_workflow_message(read_text(args.input))
     assistant_draft_override = read_text(args.assistant_draft) if args.assistant_draft else ""
+    if not (assistant_draft_override.strip() or workflow_message.assistant_draft.strip()):
+        raise SystemExit(
+            "Hermes-only mode requires an assistant draft. Add a 'Черновик ассистента:' "
+            "block to the message or pass --assistant-draft PATH."
+        )
     data = radi_ct_api.request_json(
         "POST",
         "/api/draft",

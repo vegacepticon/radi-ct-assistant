@@ -151,8 +151,8 @@ def cmd_health(args: argparse.Namespace) -> None:
 # Назначение: создать draft case через HTTP API.
 # Вход:
 #   input — файл со входным описанием/черновыми находками или "-" для stdin.
-#   --assistant-draft — файл с уже готовым черновиком; если не передан, backend
-#       попытается использовать generate path с retrieval/LLM.
+#   --assistant-draft — обязательный файл с уже готовым черновиком Hermes.
+#       Backend сам не генерирует текст и не вызывает внешние LLM.
 # Выход: JSON с case_id, draft, references_used, path.
 def cmd_draft(args: argparse.Namespace) -> None:
     payload = {
@@ -163,7 +163,7 @@ def cmd_draft(args: argparse.Namespace) -> None:
         "clinical_context": args.clinical_context or "",
         "comparison": args.comparison,
         "mode": args.mode,
-        "assistant_draft": read_text_arg(args.assistant_draft).strip() if args.assistant_draft else "",
+        "assistant_draft": read_text_arg(args.assistant_draft).strip(),
     }
     print_json(request_json("POST", "/api/draft", payload=payload))
 
@@ -261,7 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft.add_argument("--area", action="append", help="Study area, can be repeated")
     draft.add_argument("--clinical-context", default="", help="Anonymized clinical context")
     draft.add_argument("--comparison", action="store_true", help="Dynamic comparison exists")
-    draft.add_argument("--mode", default="fast", choices=["fast", "analytical"], help="Generation mode if assistant draft is omitted")
+    draft.add_argument("--mode", default="fast", choices=["fast", "analytical"], help="Hermes draft mode metadata")
     draft.set_defaults(func=cmd_draft)
 
     accept = subparsers.add_parser("accept", help="Accept draft case through API")

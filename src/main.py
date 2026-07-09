@@ -10,8 +10,6 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .prompt_builder import build_prompt
-from .llm_client import generate
 from .parser import parse_directory
 from .config import BASE_DIR, RAG_BACKEND, REFERENCE_VAULT_DIR, REFERENCES_DIR
 from .case_schema import InputType, TaskName
@@ -58,19 +56,6 @@ def get_retriever() -> Any:
 
 # --- Models ---
 
-class GenerateRequest(BaseModel):
-    description: str = Field(..., description="Описательная часть КТ-исследования")
-    area: str = Field("", description="Область исследования, e.g. 'КТА ГМ'")
-    mode: str = Field("fast", description="Режим: 'fast' или 'analytical'")
-    clinical_context: str = Field("", description="Возраст, пол, клиническая задача")
-
-
-class GenerateResponse(BaseModel):
-    conclusion: str
-    differential: str | None = None
-    references_used: list[str] = []
-
-
 class ReindexResponse(BaseModel):
     indexed: int
     message: str
@@ -104,8 +89,8 @@ class DraftRequest(BaseModel):
     area: list[str] = Field(default_factory=list, description="Области исследования")
     clinical_context: str = Field("", description="Обезличенный клинический контекст")
     comparison: bool = Field(False, description="Есть ли сравнение в динамике")
-    mode: str = Field("fast", description="Режим генерации для старого generate path")
-    assistant_draft: str = Field("", description="Готовый черновик; если передан, LLM не вызывается")
+    mode: str = Field("fast", description="Режим Hermes-черновика: сохраняется как metadata для аудита")
+    assistant_draft: str = Field(..., description="Готовый черновик, сформированный Hermes; backend сам не генерирует текст")
 
 
 class DraftResponse(BaseModel):
@@ -231,77 +216,22 @@ def _case_detail_from_record(record: Any) -> CaseDetail:
 
 # --- Endpoints ---
 
-@app.post("/api/generate", response_model=GenerateResponse)
-async def generate_conclusion(req: GenerateRequest):
-    """Генерирует заключение КТ на основе описания."""
-    if not req.description.strip():
-        raise HTTPException(400, "Описание не может быть пустым")
-
-    if req.mode not in ("fast", "analytical"):
-        raise HTTPException(400, "Режим должен быть 'fast' или 'analytical'")
-
-    retriever = get_retriever()
-    references = retriever.search(
-        query_description=req.description,
-        area=req.area,
-    )
-
-    prompt = build_prompt(
-        description=req.description,
-        references=references,
-        mode=req.mode,
-        clinical_context=req.clinical_context,
-    )
-
-    try:
-        raw_output = await generate(prompt)
-    except Exception as e:
-        raise HTTPException(502, f"LLM API error: {e}")
-
-    # Разделяем заключение и диффдиагноз (если есть)
-    conclusion = raw_output
-    differential = None
-    if "---" in raw_output and req.mode == "analytical":
-        parts = raw_output.split("---", 1)
-        conclusion = parts[0].strip()
-        differential = parts[1].strip() if len(parts) > 1 else None
-
-    ref_paths = [r.description[:80] + "..." for r in references]
-
-    return GenerateResponse(
-        conclusion=conclusion,
-        differential=differential,
-        references_used=ref_paths,
-    )
-
-
 @app.post("/api/draft", response_model=DraftResponse)
 async def create_draft(req: DraftRequest):
     """Создаёт learning-loop draft case и возвращает case_id.
 
-    Если assistant_draft уже передан, endpoint только сохраняет case и не
-    вызывает retrieval/LLM. Это основной безопасный путь для локальных тестов.
-    Если assistant_draft пустой, используется текущий generate path.
+    Hermes-only contract: backend не вызывает LLM и не генерирует текст.
+    `assistant_draft` обязателен и должен быть сформирован Hermes в текущей
+    Telegram/agent-сессии на основе входа и локально найденных references.
     """
     if not req.input_text.strip():
         raise HTTPException(400, "input_text не может быть пустым")
 
-    references_used: list[str] = []
     draft = req.assistant_draft.strip()
-
     if not draft:
-        area = req.area[0] if req.area else ""
-        generated = await generate_conclusion(
-            GenerateRequest(
-                description=req.input_text,
-                area=area,
-                mode=req.mode,
-                clinical_context=req.clinical_context,
-            )
-        )
-        draft = generated.conclusion
-        references_used = generated.references_used
+        raise HTTPException(400, "assistant_draft обязателен в Hermes-only режиме")
 
+    references_used: list[str] = []
     store = get_feedback_store()
     record = store.create_case(
         input_text=req.input_text,

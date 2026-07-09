@@ -10,6 +10,30 @@ from src.main import app
 
 
 class LearningLoopApiTest(unittest.TestCase):
+    def test_draft_requires_assistant_draft_in_hermes_only_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADI_CT_BASE_DIR"] = tmp
+            client = TestClient(app)
+            response = client.post(
+                "/api/draft",
+                json={
+                    "input_text": "Описание: синтетический очаг S8 правого легкого уменьшился.",
+                    "task": "conclusion",
+                },
+            )
+            self.assertEqual(response.status_code, 422)
+
+            blank_response = client.post(
+                "/api/draft",
+                json={
+                    "input_text": "Описание: синтетический очаг S8 правого легкого уменьшился.",
+                    "assistant_draft": "   ",
+                    "task": "conclusion",
+                },
+            )
+            self.assertEqual(blank_response.status_code, 400)
+            self.assertIn("assistant_draft", blank_response.text)
+
     def test_draft_correct_lessons_without_llm(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["RADI_CT_BASE_DIR"] = tmp
