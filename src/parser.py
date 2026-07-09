@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import frontmatter
 
+from .feedback_store import is_reference_active
+
 
 @dataclass
 class ReferenceEntry:
@@ -27,8 +29,8 @@ class ReferenceEntry:
 
     @property
     def is_quality(self) -> bool:
-        """Статус: true → качественный, идёт в few-shot."""
-        return bool(self.metadata.get("статус", False))
+        """Активный качественный reference идёт в few-shot."""
+        return is_reference_active(self.metadata)
 
     @property
     def doctor(self) -> str:

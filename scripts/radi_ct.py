@@ -138,8 +138,36 @@ def cmd_correct(args: argparse.Namespace) -> None:
 # Выход: reference markdown в data/references.
 def cmd_promote(args: argparse.Namespace) -> None:
     store = FeedbackStore(base_dir=STORE_BASE_DIR)
-    path = store.promote_to_reference(args.case_id)
+    path = store.promote_to_reference(
+        args.case_id,
+        reference_status=args.reference_status,
+        quality=args.quality,
+        style_version=args.style_version,
+    )
     print_json({"case_id": args.case_id, "reference_path": str(path)})
+
+
+# Назначение: показать reference base с lifecycle metadata.
+# Вход: опциональный --status и --active-only.
+# Выход: JSON-список references для ревизии качества.
+def cmd_references(args: argparse.Namespace) -> None:
+    store = FeedbackStore(base_dir=STORE_BASE_DIR)
+    data = store.list_references(status=args.status, include_inactive=not args.active_only)
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+# Назначение: обновить статус/качество/style_version существующего reference.
+# Вход: reference_id и поля lifecycle.
+# Выход: JSON с путем обновленного reference.
+def cmd_reference_update(args: argparse.Namespace) -> None:
+    store = FeedbackStore(base_dir=STORE_BASE_DIR)
+    path = store.update_reference_lifecycle(
+        args.reference_id,
+        reference_status=args.reference_status,
+        quality=args.quality,
+        style_version=args.style_version,
+    )
+    print_json({"reference_id": args.reference_id, "path": str(path)})
 
 
 # Назначение: показать список cases.
@@ -201,7 +229,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     promote = subparsers.add_parser("promote", help="Promote accepted/corrected case to reference base")
     promote.add_argument("case_id")
+    promote.add_argument("--reference-status", default="active", choices=["active", "gold", "deprecated", "needs_review", "rejected"])
+    promote.add_argument("--quality", default="standard", choices=["gold", "high", "standard", "low"])
+    promote.add_argument("--style-version", help="Style version label, e.g. 2026-07")
     promote.set_defaults(func=cmd_promote)
+
+    references = subparsers.add_parser("references", help="List reference lifecycle metadata")
+    references.add_argument("--status", choices=["active", "gold", "deprecated", "needs_review", "rejected"])
+    references.add_argument("--active-only", action="store_true")
+    references.set_defaults(func=cmd_references)
+
+    reference_update = subparsers.add_parser("reference-update", help="Update reference lifecycle metadata")
+    reference_update.add_argument("reference_id")
+    reference_update.add_argument("--reference-status", choices=["active", "gold", "deprecated", "needs_review", "rejected"])
+    reference_update.add_argument("--quality", choices=["gold", "high", "standard", "low"])
+    reference_update.add_argument("--style-version")
+    reference_update.set_defaults(func=cmd_reference_update)
 
     cases = subparsers.add_parser("cases", help="List cases")
     cases.add_argument("--status", choices=["draft", "accepted", "corrected"])

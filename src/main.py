@@ -169,6 +169,23 @@ class PromoteResponse(BaseModel):
     case_id: str
     reference_path: str
 
+class ReferenceLifecycleUpdate(BaseModel):
+    reference_status: str | None = Field(None, description="active/gold/deprecated/needs_review/rejected")
+    quality: str | None = Field(None, description="gold/high/standard/low")
+    style_version: str | None = None
+
+class ReferenceLifecycleInfo(BaseModel):
+    reference_id: str
+    path: str
+    reference_status: str
+    quality: str
+    style_version: str
+    task: str
+    area: list[str]
+    created_at: str
+    updated_at: str
+    lifecycle_score: float
+
 
 # --- Helpers ---
 
@@ -382,6 +399,37 @@ async def get_case(case_id: str):
     except FileNotFoundError:
         raise HTTPException(404, f"Case not found: {case_id}")
     return _case_detail_from_record(record)
+
+
+@app.get("/api/references/lifecycle", response_model=list[ReferenceLifecycleInfo])
+async def list_reference_lifecycle(status: str | None = None, include_inactive: bool = True):
+    """Показывает reference base с lifecycle metadata для ревизии качества."""
+    store = get_feedback_store()
+    try:
+        return [ReferenceLifecycleInfo(**item) for item in store.list_references(status=status, include_inactive=include_inactive)]
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/references/lifecycle/{reference_id}", response_model=ReferenceLifecycleInfo)
+async def update_reference_lifecycle(reference_id: str, req: ReferenceLifecycleUpdate):
+    """Помечает reference как active/gold/deprecated/needs_review/rejected и обновляет индекс."""
+    store = get_feedback_store()
+    try:
+        store.update_reference_lifecycle(
+            reference_id,
+            reference_status=req.reference_status,
+            quality=req.quality,
+            style_version=req.style_version,
+        )
+    except FileNotFoundError:
+        raise HTTPException(404, f"Reference not found: {reference_id}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    matches = [item for item in store.list_references() if item["reference_id"] == reference_id]
+    if not matches:
+        raise HTTPException(404, f"Reference not found after update: {reference_id}")
+    return ReferenceLifecycleInfo(**matches[0])
 
 
 @app.post("/api/references/promote/{case_id}", response_model=PromoteResponse)

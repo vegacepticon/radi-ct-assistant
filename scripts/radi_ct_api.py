@@ -216,6 +216,21 @@ def cmd_promote(args: argparse.Namespace) -> None:
     print_json(request_json("POST", f"/api/references/promote/{args.case_id}", payload={}))
 
 
+# Назначение: вывести lifecycle metadata reference base через API.
+def cmd_references(args: argparse.Namespace) -> None:
+    print_json(request_json("GET", "/api/references/lifecycle", query={"status": args.status, "include_inactive": not args.active_only}))
+
+
+# Назначение: обновить lifecycle metadata reference через API.
+def cmd_reference_update(args: argparse.Namespace) -> None:
+    payload = {
+        "reference_status": args.reference_status,
+        "quality": args.quality,
+        "style_version": args.style_version,
+    }
+    print_json(request_json("POST", f"/api/references/lifecycle/{args.reference_id}", payload=payload))
+
+
 # Назначение: вывести lesson candidates через API.
 # Вход: ничего.
 # Выход: JSON-список LessonInfo.
@@ -274,6 +289,18 @@ def build_parser() -> argparse.ArgumentParser:
     promote = subparsers.add_parser("promote", help="Promote case to reference through API")
     promote.add_argument("case_id")
     promote.set_defaults(func=cmd_promote)
+
+    references = subparsers.add_parser("references", help="List reference lifecycle metadata through API")
+    references.add_argument("--status", choices=["active", "gold", "deprecated", "needs_review", "rejected"])
+    references.add_argument("--active-only", action="store_true")
+    references.set_defaults(func=cmd_references)
+
+    reference_update = subparsers.add_parser("reference-update", help="Update reference lifecycle metadata through API")
+    reference_update.add_argument("reference_id")
+    reference_update.add_argument("--reference-status", choices=["active", "gold", "deprecated", "needs_review", "rejected"])
+    reference_update.add_argument("--quality", choices=["gold", "high", "standard", "low"])
+    reference_update.add_argument("--style-version")
+    reference_update.set_defaults(func=cmd_reference_update)
 
     lessons = subparsers.add_parser("lessons", help="List lesson candidates through API")
     lessons.set_defaults(func=cmd_lessons)

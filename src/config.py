@@ -15,6 +15,10 @@ LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2000"))
 LLM_TIMEOUT = 60
+# По умолчанию backend НЕ вызывает внешнюю LLM: Hermes генерирует черновик
+# в чате и передает assistant_draft в /api/draft. Включать только для
+# обезличенных данных и осознанного OpenAI-compatible API контура.
+ENABLE_EXTERNAL_LLM = os.getenv("RADI_CT_ENABLE_EXTERNAL_LLM", "0").strip().lower() in {"1", "true", "yes", "да"}
 
 # --- Embedding ---
 EMBEDDING_MODEL = os.getenv(

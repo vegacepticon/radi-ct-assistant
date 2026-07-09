@@ -9,13 +9,25 @@ from .config import (
     LLM_TEMPERATURE,
     LLM_MAX_TOKENS,
     LLM_TIMEOUT,
+    ENABLE_EXTERNAL_LLM,
 )
 
 
 async def generate(prompt: str) -> str:
     """
-    Отправляет промпт в LLM API и возвращает сгенерированный текст.
+    Отправляет промпт во внешнюю LLM API и возвращает сгенерированный текст.
+
+    По умолчанию этот путь выключен: рабочий контур Романа должен идти через
+    Hermes, где черновик формируется в Telegram-сессии и передается в backend
+    как assistant_draft. Это защищает от случайной отправки клинического текста
+    во внешний API.
     """
+    if not ENABLE_EXTERNAL_LLM:
+        raise RuntimeError(
+            "External LLM generation is disabled. Use Hermes-generated "
+            "assistant_draft or set RADI_CT_ENABLE_EXTERNAL_LLM=1 for "
+            "explicit anonymized API generation."
+        )
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type": "application/json",
@@ -41,6 +53,11 @@ async def generate(prompt: str) -> str:
 
 def generate_sync(prompt: str) -> str:
     """Синхронная версия для скриптов."""
+    if not ENABLE_EXTERNAL_LLM:
+        raise RuntimeError(
+            "External LLM generation is disabled. Use Hermes-generated "
+            "assistant_draft or set RADI_CT_ENABLE_EXTERNAL_LLM=1."
+        )
     import requests
 
     headers = {

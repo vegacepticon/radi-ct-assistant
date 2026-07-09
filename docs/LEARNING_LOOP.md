@@ -260,6 +260,11 @@ data/feedback/lesson_candidates/
 экстренность: false
 статус: true
 задача: conclusion
+reference_status: active
+quality: standard
+style_version: 2026-07
+created_at: 2026-07
+updated_at: 2026-07
 динамика: положительная
 ---
 
@@ -278,7 +283,11 @@ data/feedback/lesson_candidates/
 | `область` | область исследования, список строк |
 | `сравнение` | есть ли динамическое сравнение |
 | `экстренность` | экстренное исследование или нет |
-| `статус` | `true` — включать в few-shot |
+| `статус` | legacy-флаг: `true` — может включаться в few-shot |
+| `reference_status` | lifecycle-статус: `active`/`gold` участвуют в retrieval; `deprecated`/`needs_review`/`rejected` исключаются |
+| `quality` | приоритет качества: `gold`, `high`, `standard`, `low` |
+| `style_version` | версия стиля, обычно `YYYY-MM`; помогает ревизии и миграции подхода |
+| `created_at`, `updated_at` | месячная дата `YYYY-MM`, без точной даты исследования/пациента |
 
 Расширенные поля, допустимые после проверки:
 
@@ -298,6 +307,46 @@ data/feedback/lesson_candidates/
 - врача;
 - точные даты исследования, если они могут идентифицировать случай;
 - номера телефонов, адреса, полисы, любые прямые идентификаторы.
+
+---
+
+## Reference lifecycle
+
+Старые примеры не должны бесконечно тянуть стиль назад. Поэтому reference base использует явный lifecycle:
+
+| Статус | Поведение |
+|---|---|
+| `active` | обычный рабочий пример, участвует в retrieval |
+| `gold` | эталонный пример, получает повышенный приоритет |
+| `needs_review` | временно исключён до ревизии |
+| `deprecated` | устаревший подход, не участвует в retrieval |
+| `rejected` | ошибочный/неподходящий пример, не участвует в retrieval |
+
+Retrieval выбирает только `статус: true` + `reference_status: active|gold`. Дополнительно score смешивает семантическую близость с lifecycle-приоритетом: качество (`gold/high/standard/low`) и мягкий recency bonus. Новые примеры получают преимущество, но старый хороший `gold` не исчезает только из-за возраста.
+
+Операции ревизии:
+
+```bash
+python3 scripts/radi_ct.py references
+python3 scripts/radi_ct.py references --active-only
+python3 scripts/radi_ct.py reference-update CASE_ID --reference-status deprecated
+python3 scripts/radi_ct.py reference-update CASE_ID --reference-status gold --quality gold --style-version 2026-07
+```
+
+Через API:
+
+```bash
+python3 scripts/radi_ct_api.py references
+python3 scripts/radi_ct_api.py reference-update CASE_ID --reference-status deprecated
+```
+
+---
+
+## Hermes-only генерация
+
+Основной контур: Hermes формирует черновик в текущей Telegram-сессии, затем backend сохраняет его через `/api/draft` как `assistant_draft`. В этом режиме `radi-ct-assistant` не вызывает внешнюю LLM и остаётся локальным store/RAG/lifecycle сервисом.
+
+Legacy `/api/generate` сохранён только как явный fallback для обезличенных тестов. По умолчанию он заблокирован: `RADI_CT_ENABLE_EXTERNAL_LLM=0`. Чтобы включить внешний OpenAI-compatible API, нужно явно установить `RADI_CT_ENABLE_EXTERNAL_LLM=1`; без этого `llm_client` бросит ошибку до сетевого вызова.
 
 ---
 

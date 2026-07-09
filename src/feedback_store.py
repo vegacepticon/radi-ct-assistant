@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,56 @@ FORBIDDEN_REFERENCE_KEYS = {
     "полис",
     "телефон",
 }
+
+REFERENCE_ACTIVE_STATUSES = {"active", "gold"}
+REFERENCE_ALL_STATUSES = {"active", "gold", "deprecated", "needs_review", "rejected"}
+REFERENCE_QUALITY_SCORES = {"gold": 1.0, "high": 0.85, "standard": 0.65, "low": 0.35}
+
+
+# Назначение: безопасно разобрать ISO datetime из YAML metadata.
+# Вход: строка created_at/updated_at или пустое значение.
+# Выход: datetime или None, если формат неизвестен.
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value)
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}", text):
+            return datetime.fromisoformat(f"{text}-01T00:00:00+03:00")
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+# Назначение: вычислить числовой приоритет reference для сортировки.
+# Вход: YAML metadata reference-файла.
+# Выход: score, где выше = предпочтительнее. Semantic score добавляется отдельно в retriever.
+def reference_lifecycle_score(metadata: dict[str, Any]) -> float:
+    status = str(metadata.get("reference_status") or "active").lower()
+    quality = str(metadata.get("quality") or ("gold" if status == "gold" else "standard")).lower()
+    score = REFERENCE_QUALITY_SCORES.get(quality, REFERENCE_QUALITY_SCORES["standard"])
+    if status == "gold":
+        score += 0.25
+    elif status == "needs_review":
+        score -= 0.25
+
+    dt = _parse_iso_datetime(metadata.get("updated_at") or metadata.get("created_at"))
+    if dt:
+        # Мягкий recency bonus: новые примеры получают преимущество, но хороший
+        # старый gold-reference не уничтожается только из-за возраста.
+        age_days = max((datetime.now(dt.tzinfo) - dt).days, 0)
+        score += max(0.0, 0.25 - min(age_days, 365) / 365 * 0.25)
+    return score
+
+
+# Назначение: проверить, может ли reference участвовать в few-shot retrieval.
+# Вход: YAML metadata.
+# Выход: True только для статус:true и active/gold lifecycle.
+def is_reference_active(metadata: dict[str, Any]) -> bool:
+    if not bool(metadata.get("статус", False)):
+        return False
+    status = str(metadata.get("reference_status") or "active").lower()
+    return status in REFERENCE_ACTIVE_STATUSES
 
 
 @dataclass(slots=True)
@@ -280,14 +331,25 @@ class FeedbackStore:
     # Назначение: перенести accepted/corrected case в reference base для few-shot.
     # Вход: case_id уже принятого или исправленного case.
     # Выход: путь к reference markdown-файлу.
-    def promote_to_reference(self, case_id: str) -> Path:
+    def promote_to_reference(
+        self,
+        case_id: str,
+        reference_status: str = "active",
+        quality: str = "standard",
+        style_version: str | None = None,
+    ) -> Path:
         record = self.load_case(case_id)
         if record.metadata.status not in ("accepted", "corrected"):
             raise ValueError("Only accepted/corrected cases can be promoted to references")
         if not record.roman_final.strip():
             raise ValueError("Cannot promote case without Roman final text")
 
-        reference_text = self._render_reference(record)
+        reference_text = self._render_reference(
+            record,
+            reference_status=reference_status,
+            quality=quality,
+            style_version=style_version,
+        )
         self.assert_no_direct_identifiers(reference_text)
         self.ensure_reference_frontmatter_safe(record.metadata)
 
@@ -357,6 +419,80 @@ class FeedbackStore:
                 )
         return sorted(items, key=lambda item: item["case_id"])
 
+    # Назначение: вывести references с lifecycle metadata для ревизии базы.
+    # Вход: опциональный status-фильтр; include_inactive=True показывает все.
+    # Выход: список словарей с path/status/quality/style_version/created_at.
+    def list_references(
+        self,
+        status: str | None = None,
+        include_inactive: bool = True,
+    ) -> list[dict[str, Any]]:
+        self.ensure_dirs()
+        items: list[dict[str, Any]] = []
+        for path in sorted(self.reference_vault_dir.glob("*.md")):
+            metadata, _body = self._split_frontmatter(path.read_text(encoding="utf-8"))
+            reference_status = str(metadata.get("reference_status") or "active")
+            if status and reference_status != status:
+                continue
+            if not include_inactive and reference_status not in REFERENCE_ACTIVE_STATUSES:
+                continue
+            items.append(
+                {
+                    "reference_id": path.stem,
+                    "path": str(path),
+                    "reference_status": reference_status,
+                    "quality": str(metadata.get("quality") or "standard"),
+                    "style_version": str(metadata.get("style_version") or ""),
+                    "task": str(metadata.get("задача") or ""),
+                    "area": metadata.get("область") or [],
+                    "created_at": str(metadata.get("created_at") or ""),
+                    "updated_at": str(metadata.get("updated_at") or ""),
+                    "lifecycle_score": round(reference_lifecycle_score(metadata), 4),
+                }
+            )
+        return sorted(items, key=lambda item: (item["reference_status"], item["reference_id"]))
+
+    # Назначение: обновить lifecycle metadata существующего reference.
+    # Вход: reference_id/case_id и новые status/quality/style_version.
+    # Выход: путь к обновленному reference; legacy mirror обновляется тоже.
+    def update_reference_lifecycle(
+        self,
+        reference_id: str,
+        reference_status: str | None = None,
+        quality: str | None = None,
+        style_version: str | None = None,
+    ) -> Path:
+        self.ensure_dirs()
+        path = self.reference_vault_dir / f"{reference_id}.md"
+        if not path.exists():
+            raise FileNotFoundError(f"Reference not found: {reference_id}")
+
+        text = path.read_text(encoding="utf-8")
+        metadata, body = self._split_frontmatter(text)
+        if reference_status is not None:
+            normalized_status = reference_status.strip().lower()
+            if normalized_status not in REFERENCE_ALL_STATUSES:
+                raise ValueError(f"reference_status must be one of: {sorted(REFERENCE_ALL_STATUSES)}")
+            metadata["reference_status"] = normalized_status
+            metadata["статус"] = normalized_status in REFERENCE_ACTIVE_STATUSES
+        if quality is not None:
+            normalized_quality = quality.strip().lower()
+            if normalized_quality not in REFERENCE_QUALITY_SCORES:
+                raise ValueError(f"quality must be one of: {sorted(REFERENCE_QUALITY_SCORES)}")
+            metadata["quality"] = normalized_quality
+        if style_version is not None:
+            metadata["style_version"] = style_version.strip() or None
+        metadata["updated_at"] = now_moscow_iso()[:7]
+
+        updated = self._render_markdown_with_frontmatter(metadata, body)
+        path.write_text(updated, encoding="utf-8")
+        legacy_path = self.references_dir / f"{reference_id}.md"
+        if legacy_path.exists():
+            legacy_path.write_text(updated, encoding="utf-8")
+        if AUTO_REINDEX_REFERENCES:
+            self.reindex_reference_vault_best_effort()
+        return path
+
     # Назначение: грубо проверить текст на прямые идентификаторы перед reference promotion.
     # Вход: полный markdown reference.
     # Выход: ничего; при подозрительном паттерне бросает ValueError.
@@ -373,6 +509,13 @@ class FeedbackStore:
         forbidden = FORBIDDEN_REFERENCE_KEYS.intersection(metadata.extra.keys())
         if forbidden:
             raise ValueError(f"Forbidden reference metadata keys: {sorted(forbidden)}")
+
+    # Назначение: собрать markdown из metadata и body без изменения тела.
+    # Вход: YAML metadata dict и markdown body без внешних --- delimiters.
+    # Выход: полный markdown-файл с frontmatter.
+    def _render_markdown_with_frontmatter(self, metadata: dict[str, Any], body: str) -> str:
+        frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
+        return "\n".join(["---", frontmatter, "---", "", body.strip(), ""])
 
     # Назначение: записать CaseRecord в markdown с YAML frontmatter и секциями.
     # Вход: record и путь назначения.
@@ -478,14 +621,32 @@ class FeedbackStore:
     # Назначение: собрать markdown reference из финального case.
     # Вход: CaseRecord.
     # Выход: текст reference-файла с минимальным безопасным YAML.
-    def _render_reference(self, record: CaseRecord) -> str:
+    def _render_reference(
+        self,
+        record: CaseRecord,
+        reference_status: str = "active",
+        quality: str = "standard",
+        style_version: str | None = None,
+    ) -> str:
+        normalized_status = reference_status.strip().lower()
+        normalized_quality = quality.strip().lower()
+        if normalized_status not in REFERENCE_ALL_STATUSES:
+            raise ValueError(f"reference_status must be one of: {sorted(REFERENCE_ALL_STATUSES)}")
+        if normalized_quality not in REFERENCE_QUALITY_SCORES:
+            raise ValueError(f"quality must be one of: {sorted(REFERENCE_QUALITY_SCORES)}")
+        now = now_moscow_iso()
         metadata = {
             "анамнез": record.metadata.clinical_context or None,
             "область": record.metadata.area,
             "сравнение": record.metadata.comparison,
             "экстренность": False,
-            "статус": True,
+            "статус": normalized_status in REFERENCE_ACTIVE_STATUSES,
             "задача": record.metadata.task,
+            "reference_status": normalized_status,
+            "quality": normalized_quality,
+            "style_version": style_version or now[:7],
+            "created_at": now[:7],
+            "updated_at": now[:7],
         }
         frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
         return "\n".join(

@@ -75,6 +75,34 @@ class FeedbackStoreTest(unittest.TestCase):
             self.assertIn("draft", statuses)
             self.assertIn("accepted", statuses)
 
+    def test_reference_lifecycle_can_deprecate_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id)
+            reference_path = store.promote_to_reference(record.metadata.case_id, quality="high")
+            reference_text = reference_path.read_text(encoding="utf-8")
+            self.assertIn("reference_status: active", reference_text)
+            self.assertIn("quality: high", reference_text)
+
+            updated_path = store.update_reference_lifecycle(
+                record.metadata.case_id,
+                reference_status="deprecated",
+                quality="low",
+                style_version="legacy",
+            )
+            updated_text = updated_path.read_text(encoding="utf-8")
+            self.assertIn("reference_status: deprecated", updated_text)
+            self.assertIn("статус: false", updated_text)
+            self.assertIn("quality: low", updated_text)
+            self.assertIn("style_version: legacy", updated_text)
+            active = store.list_references(include_inactive=False)
+            self.assertEqual(active, [])
+
 
 if __name__ == "__main__":
     unittest.main()

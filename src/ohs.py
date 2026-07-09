@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import OHS_COMMAND, OHS_TIMEOUT, REFERENCE_VAULT_DIR, TOP_K, MIN_SIMILARITY
+from .feedback_store import reference_lifecycle_score
 from .parser import parse_file
 
 
@@ -221,7 +222,7 @@ class ObsidianHybridRetriever:
         output = run_ohs(args, vault_dir=self.vault_dir)
         raw_results: list[dict[str, Any]] = json.loads(output or "[]")
 
-        results: list[OhsRetrievalResult] = []
+        candidates: list[OhsRetrievalResult] = []
         for raw in raw_results:
             score = float(raw.get("score") or 0)
             if score < min_similarity:
@@ -238,19 +239,18 @@ class ObsidianHybridRetriever:
             if area and entry.area != area:
                 continue
 
-            results.append(
+            lifecycle_score = reference_lifecycle_score(entry.metadata)
+            candidates.append(
                 OhsRetrievalResult(
                     description=entry.description,
                     conclusion=entry.conclusion,
                     recommendation=entry.recommendation,
-                    similarity=score,
+                    similarity=(score * 0.8) + (lifecycle_score * 0.2),
                     area=entry.area,
                     doctor=entry.doctor,
                     filepath=str(filepath),
                     title=str(raw.get("title") or filepath.stem),
                 )
             )
-            if len(results) >= top_k:
-                break
-
-        return results
+        candidates.sort(key=lambda item: item.similarity, reverse=True)
+        return candidates[:top_k]

@@ -85,7 +85,10 @@ class ObsidianHybridRagTest(unittest.TestCase):
             self.assertEqual(results[0].area, "ОГК")
             self.assertIn("Очаг S8", results[0].description)
             self.assertIn("Положительная динамика", results[0].conclusion)
-            self.assertEqual(results[0].similarity, 0.91)
+            # Similarity is now a blended score: OHS semantic score plus
+            # reference lifecycle priority (quality/status/recency).
+            self.assertGreater(results[0].similarity, 0.85)
+            self.assertLess(results[0].similarity, 0.87)
 
     def test_ohs_status_reports_missing_command_without_raising(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,6 +132,71 @@ class ObsidianHybridRagTest(unittest.TestCase):
             self.assertEqual(data["backend"], "obsidian_hybrid")
             self.assertTrue(data["available"])
             self.assertEqual(data["indexed"], 1)
+
+    def test_ohs_retriever_excludes_deprecated_and_prefers_gold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            deprecated = vault / "old.md"
+            deprecated.write_text(
+                """---
+анамнез: синтетический пример
+область:
+  - ОГК
+сравнение: true
+экстренность: false
+статус: false
+задача: conclusion
+reference_status: deprecated
+quality: low
+---
+
+Описание:
+Старое описание.
+
+Заключение:
+Старое заключение.
+""",
+                encoding="utf-8",
+            )
+            gold = vault / "gold.md"
+            gold.write_text(
+                """---
+анамнез: синтетический пример
+область:
+  - ОГК
+сравнение: true
+экстренность: false
+статус: true
+задача: conclusion
+reference_status: gold
+quality: gold
+created_at: 2026-07-09T12:00:00+03:00
+updated_at: 2026-07-09T12:00:00+03:00
+---
+
+Описание:
+Актуальное описание.
+
+Заключение:
+Актуальное заключение.
+""",
+                encoding="utf-8",
+            )
+            fake_output = json.dumps(
+                [
+                    {"path": "old.md", "title": "old", "score": 0.99},
+                    {"path": "gold.md", "title": "gold", "score": 0.80},
+                ],
+                ensure_ascii=False,
+            )
+
+            with patch("src.ohs.run_ohs", return_value=fake_output):
+                results = ObsidianHybridRetriever(vault_dir=vault).search(
+                    "синтетический запрос", area="ОГК", task="conclusion", top_k=3
+                )
+
+            self.assertEqual(len(results), 1)
+            self.assertIn("Актуальное", results[0].conclusion)
 
 
 if __name__ == "__main__":

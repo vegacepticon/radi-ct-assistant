@@ -16,8 +16,9 @@ Few-shot retrieval: динамически подтягивать релеван
 - **Obsidian Hybrid Search RAG** — гибридный поиск `obsidian-hybrid-search`: BM25 + semantic search по reference vault.
 - **Learning loop** — accepted/corrected cases автоматически превращаются в reference examples после PHI guard.
 - **Retrieval-сервис** — FastAPI на Raspberry Pi, собирает промпт с few-shot примерами.
-- **LLM API** — OpenAI-compatible API для генерации медицинского текста на русском.
-- **Два режима** — быстрый (рутина, только заключение) и аналитический (диффдиагноз с обоснованием).
+- **Hermes-only draft workflow** — по умолчанию backend не вызывает внешнюю LLM: Hermes формирует черновик в Telegram-сессии и сохраняет его через `/api/draft` как `assistant_draft`.
+- **External LLM fallback** — OpenAI-compatible API выключен по умолчанию и доступен только при явном `RADI_CT_ENABLE_EXTERNAL_LLM=1` для осознанных обезличенных тестов.
+- **Reference lifecycle** — старые/сомнительные примеры можно помечать `deprecated`, `needs_review`, `rejected`; retrieval использует только `active`/`gold` и учитывает качество/новизну.
 
 Старый ChromaDB/sentence-transformers backend сохранён как legacy fallback через `RAG_BACKEND=chroma`, но основной backend по умолчанию — `RAG_BACKEND=obsidian_hybrid`.
 
@@ -30,6 +31,7 @@ Few-shot retrieval: динамически подтягивать релеван
 | `RADI_CT_REFERENCE_VAULT_DIR` | `data/reference-vault` | Путь к локальному reference vault |
 | `RADI_CT_AUTO_REINDEX` | `1` | Автоматический OHS reindex после promotion |
 | `RADI_CT_BASE_DIR` | корень проекта | Базовая директория для data/ |
+| `RADI_CT_ENABLE_EXTERNAL_LLM` | `0` | Явное включение legacy `/api/generate` через внешний OpenAI-compatible API; по умолчанию выключено |
 
 ### Архитектура
 
@@ -43,9 +45,11 @@ Few-shot retrieval: динамически подтягивать релеван
    3. Фильтр по области/статусу/task
    4. Сборка промпта: системный + 3-5 few-shot + входное описание
          ↓
-   [LLM API]
+   [Hermes в Telegram-сессии]
          ↓
-   Черновик заключения
+   Черновик заключения/описания
+         ↓
+   /api/draft сохраняет assistant_draft без внешнего LLM API
          ↓
    accept/correct от Романа
          ↓
@@ -72,10 +76,10 @@ Few-shot retrieval: динамически подтягивать релеван
 ## Стек
 
 - Python 3.11+, FastAPI, uvicorn
-- sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2)
-- ChromaDB (или numpy + cosine similarity для прототипа)
-- OpenAI-compatible API (DeepSeek V3 / Claude Haiku)
-- Raspberry Pi 5 (хост)
+- FastAPI + uvicorn на Raspberry Pi 5
+- Obsidian Hybrid Search как основной RAG backend
+- Hermes Telegram-сессия как основной генератор черновиков
+- Legacy OpenAI-compatible API только при явном `RADI_CT_ENABLE_EXTERNAL_LLM=1`
 
 ## Лицензия
 
