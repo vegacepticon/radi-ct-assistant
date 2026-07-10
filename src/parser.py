@@ -65,7 +65,7 @@ def _split_section(text: str, markers: list[str]) -> tuple[str, str]:
 
 
 def _strip_code_blocks(text: str) -> str:
-    """Удаляет markdown code-блоки (```...```) и заголовки (## Описание)."""
+    """Удаляет markdown code-блоки, заголовки и дублирующие секционные маркеры."""
     # Удаляем заголовки ## Описание, ## Заключение и т.д.
     text = re.sub(r"^##\s+.*\s*$", "", text, flags=re.MULTILINE)
     # Удаляем code-блоки ```...```
@@ -77,7 +77,19 @@ def _strip_code_blocks(text: str) -> str:
         lines = lines[1:]
     if lines and lines[-1].strip() == "```":
         lines = lines[:-1]
-    return "\n".join(lines).strip()
+    cleaned = "\n".join(lines).strip()
+    # Reference-файлы, созданные learning loop, хранят явные строки
+    # "Описание:" / "Заключение:". prompt_builder сам добавляет эти подписи,
+    # поэтому внутренний начальный маркер надо убрать, иначе получается
+    # "Описание:\nОписание:" в few-shot prompt.
+    cleaned = re.sub(
+        r"^(?:Описание|Заключение|Рекомендовано|Рекомендации)\s*:\s*\n",
+        "",
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned
 
 
 def parse_file(filepath: str | Path) -> ReferenceEntry | None:
