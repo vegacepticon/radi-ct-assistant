@@ -80,6 +80,7 @@ class WorkflowWrapperTest(unittest.TestCase):
         self.assertEqual(captured["payload"]["task"], "conclusion")
         self.assertEqual(captured["payload"]["area"], ["ОГК"])
         self.assertEqual(captured["payload"]["input_text"], "Описание: синтетическое описание.")
+        self.assertEqual(captured["payload"]["references_used"], [])
         self.assertIn("RadiCT draft создан", stdout.getvalue())
         self.assertIn("`case-1`", stdout.getvalue())
 
@@ -113,6 +114,62 @@ class WorkflowWrapperTest(unittest.TestCase):
 
         self.assertIn("assistant draft", str(cm.exception))
         request_json.assert_not_called()
+
+    def test_rag_status_command_calls_rag_status_endpoint(self):
+        def fake_request_json(method, path, payload=None, query=None):
+            return {
+                "backend": "obsidian_hybrid",
+                "available": True,
+                "indexed": 6,
+                "total": 6,
+                "chunks": 35,
+                "command": "/tmp/obsidian-hybrid-search",
+                "error": "",
+            }
+
+        with patch("scripts.radi_ct_workflow.radi_ct_api.request_json", fake_request_json), patch(
+            "sys.stdout", new=io.StringIO()
+        ) as stdout:
+            radi_ct_workflow.main(["rag-status"])
+
+        self.assertIn("RadiCT RAG status", stdout.getvalue())
+        self.assertIn("`6/6`", stdout.getvalue())
+
+    def test_rag_context_command_posts_payload_and_prints_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            message_path = Path(tmp) / "message.md"
+            message_path.write_text(
+                """РКТ заключение
+Область: ОГК
+Контекст: синтетический контекст
+---
+Описание: синтетическое описание.
+""",
+                encoding="utf-8",
+            )
+            captured = {}
+
+            def fake_request_json(method, path, payload=None, query=None):
+                captured["method"] = method
+                captured["path"] = path
+                captured["payload"] = payload
+                return {
+                    "prompt": "PROMPT",
+                    "references_used": ["/tmp/ref.md"],
+                    "references": [{"filepath": "/tmp/ref.md", "similarity": 0.9, "area": "ОГК"}],
+                }
+
+            with patch("scripts.radi_ct_workflow.radi_ct_api.request_json", fake_request_json), patch(
+                "sys.stdout", new=io.StringIO()
+            ) as stdout:
+                radi_ct_workflow.main(["rag-context", str(message_path), "--top-k", "3"])
+
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/api/rag/context")
+        self.assertEqual(captured["payload"]["area"], ["ОГК"])
+        self.assertEqual(captured["payload"]["top_k"], 3)
+        self.assertIn("RadiCT RAG context", stdout.getvalue())
+        self.assertIn("PROMPT", stdout.getvalue())
 
     def test_accept_auto_promotes_by_default_and_can_be_disabled(self):
         calls = []

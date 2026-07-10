@@ -44,8 +44,10 @@ CASE_SECTIONS = {
 DIRECT_IDENTIFIER_PATTERNS = [
     re.compile(r"\b\d{6,}\b"),  # длинные ID/номера исследований
     re.compile(r"\b\+?\d[\d\s()\-]{9,}\d\b"),  # телефоны
-    re.compile(r"\b\d{2}\.\d{2}\.\d{4}\b"),  # точные даты dd.mm.yyyy
-    re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),  # точные даты yyyy-mm-dd
+    # Клинические даты операций/исследований в теле протокола не считаем
+    # прямым идентификатором сами по себе: они нужны для динамики и анамнеза.
+    # Запрещенные YAML-ключи с административными датами по-прежнему блокируются
+    # через FORBIDDEN_REFERENCE_KEYS.
     re.compile(r"\b[A-ZА-ЯЁ][a-zа-яё]+\s+[A-ZА-ЯЁ][a-zа-яё]+\s+[A-ZА-ЯЁ][a-zа-яё]+\b"),  # ФИО целиком
 ]
 
@@ -618,6 +620,39 @@ class FeedbackStore:
     def _remove_other_case_copies(self, case_id: str, keep_dir: Path) -> None:
         return None
 
+    # Назначение: выделить из финального протокола ту часть, которая должна стать
+    # целевым блоком reference.
+    # Вход: CaseRecord; roman_final может быть как только заключением, так и полным
+    # протоколом с маркерами "Заключение:" / "Рекомендации:".
+    # Выход: (заключение_или_финальный_текст, рекомендации). Для task=conclusion
+    # сохраняем только собственно заключение, иначе few-shot загрязняется полным
+    # протоколом внутри блока "Заключение".
+    def _reference_target_text(self, record: CaseRecord) -> tuple[str, str]:
+        final_text = record.roman_final.strip()
+        if record.metadata.task != "conclusion" or not final_text:
+            return final_text, ""
+
+        conclusion_pattern = re.compile(r"^(?:##\s*)?Заключение\s*:\s*$", re.IGNORECASE | re.MULTILINE)
+        conclusion_matches = list(conclusion_pattern.finditer(final_text))
+        if not conclusion_matches:
+            return final_text, ""
+
+        # Если Роман прислал полный протокол, в тексте может быть несколько
+        # маркеров "Заключение:". Для reference нужен последний — финальный.
+        conclusion_start = conclusion_matches[-1].end()
+        conclusion_block = final_text[conclusion_start:].strip()
+
+        recommendation_pattern = re.compile(
+            r"^(?:##\s*)?(?:Рекомендовано|Рекомендации)\s*:\s*$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        recommendation_match = recommendation_pattern.search(conclusion_block)
+        if recommendation_match:
+            conclusion = conclusion_block[: recommendation_match.start()].strip()
+            recommendation = conclusion_block[recommendation_match.end() :].strip()
+            return conclusion, recommendation
+        return conclusion_block, ""
+
     # Назначение: собрать markdown reference из финального case.
     # Вход: CaseRecord.
     # Выход: текст reference-файла с минимальным безопасным YAML.
@@ -649,17 +684,19 @@ class FeedbackStore:
             "updated_at": now[:7],
         }
         frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
-        return "\n".join(
-            [
-                "---",
-                frontmatter,
-                "---",
-                "",
-                "Описание:",
-                record.input_text.strip(),
-                "",
-                "Заключение:",
-                record.roman_final.strip(),
-                "",
-            ]
-        )
+        target_text, recommendation = self._reference_target_text(record)
+        parts = [
+            "---",
+            frontmatter,
+            "---",
+            "",
+            "Описание:",
+            record.input_text.strip(),
+            "",
+            "Заключение:",
+            target_text.strip(),
+            "",
+        ]
+        if recommendation.strip():
+            parts.extend(["Рекомендации:", recommendation.strip(), ""])
+        return "\n".join(parts)

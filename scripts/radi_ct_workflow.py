@@ -358,7 +358,11 @@ def parse_workflow_message(text: str) -> WorkflowMessage:
 # Назначение: собрать JSON payload для /api/draft.
 # Вход: WorkflowMessage и опциональный assistant_draft из отдельного файла.
 # Выход: словарь, совместимый с DraftRequest backend-а.
-def draft_payload(message: WorkflowMessage, assistant_draft_override: str = "") -> dict[str, Any]:
+def draft_payload(
+    message: WorkflowMessage,
+    assistant_draft_override: str = "",
+    references_used: list[str] | None = None,
+) -> dict[str, Any]:
     return {
         "input_text": message.input_text,
         "task": message.task,
@@ -368,6 +372,7 @@ def draft_payload(message: WorkflowMessage, assistant_draft_override: str = "") 
         "comparison": message.comparison,
         "mode": message.mode,
         "assistant_draft": assistant_draft_override.strip() or message.assistant_draft,
+        "references_used": references_used or [],
     }
 
 
@@ -408,6 +413,23 @@ def format_draft_response(data: dict[str, Any]) -> str:
         f"{preview(data.get('draft', ''))}\n\n"
         "Дальше: если вариант верный — `accept CASE_ID`; если правишь — `correct CASE_ID --final ...`."
     )
+
+
+# Назначение: форматировать RAG-context для Telegram/Hermes.
+# Вход: JSON от /api/rag/context.
+# Выход: Markdown с readiness и полным prompt, который Hermes должен использовать для черновика.
+def format_rag_context_response(data: dict[str, Any]) -> str:
+    references = data.get("references") or []
+    lines = [
+        "## RadiCT RAG context",
+        f"- Референсы: {len(references)}",
+    ]
+    for ref in references[:10]:
+        lines.append(
+            f"- `{ref.get('filepath', '')}` — score {ref.get('similarity', 0)} / {ref.get('area', '') or '—'}"
+        )
+    lines.extend(["", "**Prompt для Hermes:**", "```text", data.get("prompt", ""), "```"])
+    return "\n".join(lines)
 
 
 # Назначение: форматировать ответ accept/correct для Telegram.
@@ -498,6 +520,40 @@ def format_lessons_response(data: list[dict[str, Any]]) -> str:
 def cmd_health(args: argparse.Namespace) -> None:
     data = radi_ct_api.request_json("GET", "/api/health")
     print_result(data, args.json, f"RadiCT API: `{data.get('status', 'unknown')}`")
+
+
+# Назначение: команда `rag-status` — проверить готовность RAG/OHS.
+# Вход: argparse args.
+# Выход: JSON или компактный Markdown со статусом индекса.
+def cmd_rag_status(args: argparse.Namespace) -> None:
+    data = radi_ct_api.request_json("GET", "/api/rag/status")
+    markdown = (
+        "## RadiCT RAG status\n"
+        f"- Backend: `{data.get('backend', '')}`\n"
+        f"- Available: `{data.get('available', False)}`\n"
+        f"- Notes: `{data.get('indexed', 0)}/{data.get('total', 0)}`\n"
+        f"- Chunks: `{data.get('chunks', 0)}`\n"
+        f"- Command: `{data.get('command', '')}`\n"
+        f"- Error: `{data.get('error', '') or '—'}`"
+    )
+    print_result(data, args.json, markdown)
+
+
+# Назначение: команда `rag-context` — собрать local few-shot prompt для Hermes.
+# Вход: сообщение/описание в том же формате, что `message`.
+# Выход: prompt + references_used; backend не вызывает LLM.
+def cmd_rag_context(args: argparse.Namespace) -> None:
+    workflow_message = parse_workflow_message(read_text(args.input))
+    payload = {
+        "input_text": workflow_message.input_text,
+        "task": workflow_message.task,
+        "area": workflow_message.area,
+        "clinical_context": workflow_message.clinical_context,
+        "mode": workflow_message.mode,
+        "top_k": args.top_k,
+    }
+    data = radi_ct_api.request_json("POST", "/api/rag/context", payload=payload)
+    print_result(data, args.json, format_rag_context_response(data))
 
 
 # Назначение: команда `message` — создать draft из Telegram/Hermes-сообщения.
@@ -637,6 +693,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     health = subparsers.add_parser("health", help="Check API health")
     health.set_defaults(func=cmd_health)
+
+    rag_status = subparsers.add_parser("rag-status", help="Check RAG/OHS readiness")
+    rag_status.set_defaults(func=cmd_rag_status)
+
+    rag_context = subparsers.add_parser("rag-context", help="Build local RAG/few-shot context for Hermes")
+    rag_context.add_argument("input", help="Message markdown/text file, or '-' for stdin")
+    rag_context.add_argument("--top-k", type=int, default=5, help="Number of references to retrieve")
+    rag_context.set_defaults(func=cmd_rag_context)
 
     message = subparsers.add_parser("message", help="Create draft from Telegram/Hermes message")
     message.add_argument("input", help="Message markdown/text file, or '-' for stdin")

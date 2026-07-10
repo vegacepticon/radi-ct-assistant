@@ -148,6 +148,23 @@ def cmd_health(args: argparse.Namespace) -> None:
     print_json(request_json("GET", "/api/health"))
 
 
+# Назначение: получить локальный RAG/few-shot prompt для Hermes перед генерацией.
+# Вход:
+#   input — описание/находки;
+#   --area/--task/--clinical-context — фильтры и metadata для prompt.
+# Выход: JSON с prompt и references_used; backend НЕ вызывает LLM.
+def cmd_rag_context(args: argparse.Namespace) -> None:
+    payload = {
+        "input_text": read_text_arg(args.input),
+        "task": args.task,
+        "area": args.area or [],
+        "clinical_context": args.clinical_context or "",
+        "mode": args.mode,
+        "top_k": args.top_k,
+    }
+    print_json(request_json("POST", "/api/rag/context", payload=payload))
+
+
 # Назначение: создать draft case через HTTP API.
 # Вход:
 #   input — файл со входным описанием/черновыми находками или "-" для stdin.
@@ -164,6 +181,7 @@ def cmd_draft(args: argparse.Namespace) -> None:
         "comparison": args.comparison,
         "mode": args.mode,
         "assistant_draft": read_text_arg(args.assistant_draft).strip(),
+        "references_used": args.reference or [],
     }
     print_json(request_json("POST", "/api/draft", payload=payload))
 
@@ -253,6 +271,15 @@ def build_parser() -> argparse.ArgumentParser:
     health = subparsers.add_parser("health", help="Check API health")
     health.set_defaults(func=cmd_health)
 
+    rag_context = subparsers.add_parser("rag-context", help="Build local RAG/few-shot context for Hermes")
+    rag_context.add_argument("input", help="Input markdown/text file, or '-' for stdin")
+    rag_context.add_argument("--task", default="conclusion", choices=["conclusion", "description", "description_and_conclusion", "edit_description", "edit_conclusion"])
+    rag_context.add_argument("--area", action="append", help="Study area, can be repeated")
+    rag_context.add_argument("--clinical-context", default="", help="Anonymized clinical context")
+    rag_context.add_argument("--mode", default="fast", choices=["fast", "analytical"], help="Prompt mode")
+    rag_context.add_argument("--top-k", type=int, default=5, help="Number of references to retrieve")
+    rag_context.set_defaults(func=cmd_rag_context)
+
     draft = subparsers.add_parser("draft", help="Create draft case through API")
     draft.add_argument("input", help="Input markdown/text file, or '-' for stdin")
     draft.add_argument("--assistant-draft", help="Assistant draft file; avoids LLM if provided")
@@ -262,6 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     draft.add_argument("--clinical-context", default="", help="Anonymized clinical context")
     draft.add_argument("--comparison", action="store_true", help="Dynamic comparison exists")
     draft.add_argument("--mode", default="fast", choices=["fast", "analytical"], help="Hermes draft mode metadata")
+    draft.add_argument("--reference", action="append", help="Reference path/id used by Hermes while drafting")
     draft.set_defaults(func=cmd_draft)
 
     accept = subparsers.add_parser("accept", help="Accept draft case through API")

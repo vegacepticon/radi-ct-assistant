@@ -3,6 +3,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -49,12 +51,14 @@ class LearningLoopApiTest(unittest.TestCase):
                     "area": ["ОГК"],
                     "clinical_context": "синтетический пример",
                     "comparison": True,
+                    "references_used": ["/tmp/reference-1.md"],
                 },
             )
             self.assertEqual(draft_response.status_code, 200)
             draft_data = draft_response.json()
             case_id = draft_data["case_id"]
             self.assertEqual(draft_data["draft"], "Уменьшение очага S8 правого легкого.")
+            self.assertEqual(draft_data["references_used"], ["/tmp/reference-1.md"])
             self.assertTrue(Path(draft_data["path"]).exists())
 
             correct_response = client.post(
@@ -170,6 +174,50 @@ class LearningLoopApiTest(unittest.TestCase):
             phi_promote_response = client.post(f"/api/references/promote/{phi_case_id}")
             self.assertEqual(phi_promote_response.status_code, 400)
             self.assertIn("Potential PHI", phi_promote_response.text)
+
+    def test_rag_context_endpoint_builds_prompt_without_llm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADI_CT_BASE_DIR"] = tmp
+            client = TestClient(app)
+            fake_reference = SimpleNamespace(
+                description="Описание похожего синтетического случая.",
+                conclusion="Заключение похожего синтетического случая.",
+                recommendation="",
+                filepath="/tmp/reference-vault/ref-1.md",
+                title="ref-1",
+                area="ОГК",
+                similarity=0.87,
+            )
+
+            class FakeRetriever:
+                def search(self, query_description, area="", task="conclusion", top_k=5):
+                    self.query_description = query_description
+                    self.area = area
+                    self.task = task
+                    self.top_k = top_k
+                    return [fake_reference]
+
+            fake_retriever = FakeRetriever()
+            with patch("src.main.get_retriever", return_value=fake_retriever):
+                response = client.post(
+                    "/api/rag/context",
+                    json={
+                        "input_text": "Описание: синтетический очаг S8 уменьшился.",
+                        "task": "conclusion",
+                        "area": ["ОГК"],
+                        "clinical_context": "синтетический контекст",
+                        "top_k": 3,
+                    },
+                )
+
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["references_used"], ["/tmp/reference-vault/ref-1.md"])
+            self.assertIn("--- Пример 1 ---", data["prompt"])
+            self.assertIn("синтетический контекст", data["prompt"])
+            self.assertEqual(fake_retriever.area, "ОГК")
+            self.assertEqual(fake_retriever.task, "conclusion")
+            self.assertEqual(fake_retriever.top_k, 3)
 
     def test_accept_missing_case_returns_404(self):
         with tempfile.TemporaryDirectory() as tmp:

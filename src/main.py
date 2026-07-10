@@ -91,6 +91,29 @@ class DraftRequest(BaseModel):
     comparison: bool = Field(False, description="Есть ли сравнение в динамике")
     mode: str = Field("fast", description="Режим Hermes-черновика: сохраняется как metadata для аудита")
     assistant_draft: str = Field(..., description="Готовый черновик, сформированный Hermes; backend сам не генерирует текст")
+    references_used: list[str] = Field(default_factory=list, description="Reference paths/ids used by Hermes while drafting")
+
+
+class RagContextRequest(BaseModel):
+    input_text: str = Field(..., description="Входной текст для поиска похожих reference-примеров")
+    task: TaskName = Field("conclusion", description="conclusion / description / description_and_conclusion")
+    area: list[str] = Field(default_factory=list, description="Области исследования; для фильтра используется первая")
+    clinical_context: str = Field("", description="Обезличенный клинический контекст")
+    mode: str = Field("fast", description="fast / analytical prompt mode")
+    top_k: int = Field(5, ge=1, le=10, description="Сколько reference examples вернуть")
+
+
+class RagReferenceInfo(BaseModel):
+    filepath: str
+    title: str = ""
+    area: str = ""
+    similarity: float = 0.0
+
+
+class RagContextResponse(BaseModel):
+    prompt: str
+    references_used: list[str]
+    references: list[RagReferenceInfo]
 
 
 class DraftResponse(BaseModel):
@@ -214,7 +237,58 @@ def _case_detail_from_record(record: Any) -> CaseDetail:
     )
 
 
+# Назначение: получить локальный RAG-контекст для Hermes перед генерацией черновика.
+# Вход: описание/находки, задача, область и клинический контекст.
+# Выход: готовый prompt + список использованных reference-файлов; backend не вызывает LLM.
+def _build_rag_context(req: RagContextRequest) -> RagContextResponse:
+    if not req.input_text.strip():
+        raise HTTPException(400, "input_text не может быть пустым")
+
+    try:
+        retriever = get_retriever()
+        area = req.area[0] if req.area else ""
+        references = retriever.search(
+            req.input_text,
+            area=area,
+            task=req.task,
+            top_k=req.top_k,
+        )
+        from .prompt_builder import build_prompt
+
+        prompt = build_prompt(
+            req.input_text,
+            references,
+            mode=req.mode,
+            clinical_context=req.clinical_context,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"RAG context error: {e}")
+
+    reference_infos = [
+        RagReferenceInfo(
+            filepath=ref.filepath,
+            title=getattr(ref, "title", ""),
+            area=ref.area,
+            similarity=round(float(ref.similarity), 4),
+        )
+        for ref in references
+    ]
+    return RagContextResponse(
+        prompt=prompt,
+        references_used=[ref.filepath for ref in references],
+        references=reference_infos,
+    )
+
+
 # --- Endpoints ---
+
+@app.post("/api/rag/context", response_model=RagContextResponse)
+async def build_rag_context(req: RagContextRequest):
+    """Возвращает локальный few-shot/RAG prompt для Hermes без вызова LLM."""
+    return _build_rag_context(req)
+
 
 @app.post("/api/draft", response_model=DraftResponse)
 async def create_draft(req: DraftRequest):
@@ -231,7 +305,6 @@ async def create_draft(req: DraftRequest):
     if not draft:
         raise HTTPException(400, "assistant_draft обязателен в Hermes-only режиме")
 
-    references_used: list[str] = []
     store = get_feedback_store()
     record = store.create_case(
         input_text=req.input_text,
@@ -241,7 +314,7 @@ async def create_draft(req: DraftRequest):
         area=req.area,
         clinical_context=req.clinical_context,
         comparison=req.comparison,
-        references_used=references_used,
+        references_used=req.references_used,
     )
     return DraftResponse(
         case_id=record.metadata.case_id,

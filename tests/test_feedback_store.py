@@ -61,6 +61,47 @@ class FeedbackStoreTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.promote_to_reference(record.metadata.case_id)
 
+    def test_phi_check_allows_clinical_dates_without_other_identifiers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Операция выполнена 15.01.2025. Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОБП"],
+                clinical_context="контроль после операции 15.01.2025",
+            )
+            store.accept_case(record.metadata.case_id)
+
+            reference_path = store.promote_to_reference(record.metadata.case_id)
+            self.assertTrue(reference_path.exists())
+
+    def test_reference_uses_last_conclusion_when_final_protocol_contains_full_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание исследования.",
+                assistant_draft="Черновик заключения.",
+                area=["ОБП"],
+            )
+            final_protocol = """Синтетическое описание исследования.
+
+Заключение:
+Старый ошибочный блок внутри полного протокола.
+
+Заключение:
+Финальное короткое заключение Романа.
+
+Рекомендации:
+Консультация профильного специалиста.
+"""
+            store.correct_case(record.metadata.case_id, final_protocol)
+            reference_path = store.promote_to_reference(record.metadata.case_id)
+            reference_text = reference_path.read_text(encoding="utf-8")
+
+            self.assertIn("Заключение:\nФинальное короткое заключение Романа.", reference_text)
+            self.assertIn("Рекомендации:\nКонсультация профильного специалиста.", reference_text)
+            self.assertNotIn("Старый ошибочный блок", reference_text)
+
     def test_list_cases_keeps_audit_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = FeedbackStore(base_dir=Path(tmp))
