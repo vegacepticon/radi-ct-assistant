@@ -434,30 +434,58 @@ def format_rag_context_response(data: dict[str, Any]) -> str:
 
 # Назначение: форматировать ответ accept/correct для Telegram.
 # Вход: JSON от /api/accept или /api/correct.
-# Выход: Markdown с новым статусом case.
+# Выход: Markdown с новым статусом case и проверенным reference outcome.
 def format_action_response(data: dict[str, Any], title: str) -> str:
     saved = "да" if data.get("saved_as_reference") else "нет"
+    ref = data.get("reference") or {}
+    ref_lines = []
+    if ref:
+        ref_lines.append(f"- Reference requested: `{ref.get('requested', False)}`")
+        if ref.get("saved"):
+            ref_lines.append(f"- Reference ID: `{ref.get('reference_id', '')}`")
+            ref_lines.append(f"- Reference path: `{ref.get('path', '')}`")
+            idx = "да" if ref.get("index_updated") else "нет"
+            ref_lines.append(f"- Index updated: {idx}")
+            if ref.get("index_error"):
+                ref_lines.append(f"- ⚠️ Index error: `{ref.get('index_error', '')}`")
+        elif ref.get("skip_reason"):
+            ref_lines.append(f"- Skip reason: `{ref.get('skip_reason', '')}`")
+    ref_text = "\n".join(ref_lines)
     return (
         f"## {title}\n"
         f"- Case ID: `{data.get('case_id', '')}`\n"
         f"- Статус: `{data.get('status', '')}`\n"
         f"- Файл: `{data.get('path', '')}`\n"
-        f"- Сохранено как reference: {saved}"
+        f"- Сохранено как reference: {saved}\n"
+        f"{ref_text}"
     )
 
 
 # Назначение: форматировать ответ автоматического захвата диалогового кейса.
 # Вход: dict с draft/correct API-ответами.
-# Выход: Markdown с case_id и статусом reference promotion.
+# Выход: Markdown с case_id и проверенным reference outcome.
 def format_capture_session_response(data: dict[str, Any]) -> str:
     correct_data = data.get("correct", {})
     saved = "да" if correct_data.get("saved_as_reference") else "нет"
+    ref = correct_data.get("reference") or {}
+    ref_lines = []
+    if ref:
+        if ref.get("saved"):
+            ref_lines.append(f"- Reference ID: `{ref.get('reference_id', '')}`")
+            idx = "да" if ref.get("index_updated") else "нет"
+            ref_lines.append(f"- Index updated: {idx}")
+            if ref.get("index_error"):
+                ref_lines.append(f"- ⚠️ Index error: `{ref.get('index_error', '')}`")
+        elif ref.get("skip_reason"):
+            ref_lines.append(f"- Skip reason: `{ref.get('skip_reason', '')}`")
+    ref_text = "\n".join(ref_lines)
     return (
         "## RadiCT session capture сохранен\n"
         f"- Case ID: `{data.get('case_id', '')}`\n"
         f"- Статус: `{correct_data.get('status', '')}`\n"
         f"- Файл case: `{correct_data.get('path', '')}`\n"
         f"- Сохранено как reference: {saved}\n"
+        f"{ref_text}\n"
         "- PHI guard: выполнен backend-ом при promotion"
     )
 
@@ -659,13 +687,27 @@ def cmd_case(args: argparse.Namespace) -> None:
 
 # Назначение: команда `promote` — явно перенести case в reference base.
 # Вход: case_id accepted/corrected case.
-# Выход: Markdown с path созданного reference-файла.
+# Выход: Markdown с проверенным reference outcome.
 def cmd_promote(args: argparse.Namespace) -> None:
     data = radi_ct_api.request_json("POST", f"/api/references/promote/{args.case_id}", payload={})
+    ref = data.get("reference") or {}
+    ref_lines = []
+    if ref:
+        if ref.get("saved"):
+            ref_lines.append(f"- Reference ID: `{ref.get('reference_id', '')}`")
+            ref_lines.append(f"- Reference path: `{ref.get('path', '')}`")
+            idx = "да" if ref.get("index_updated") else "нет"
+            ref_lines.append(f"- Index updated: {idx}")
+            if ref.get("index_error"):
+                ref_lines.append(f"- ⚠️ Index error: `{ref.get('index_error', '')}`")
+        elif ref.get("skip_reason"):
+            ref_lines.append(f"- Skip reason: `{ref.get('skip_reason', '')}`")
+    ref_text = "\n".join(ref_lines)
     markdown = (
         "## Case сохранён в reference base\n"
         f"- Case ID: `{data.get('case_id', '')}`\n"
-        f"- Reference: `{data.get('reference_path', '')}`"
+        f"- Reference: `{data.get('reference_path', '')}`\n"
+        f"{ref_text}"
     )
     print_result(data, args.json, markdown)
 

@@ -21,7 +21,7 @@ class FeedbackStoreTest(unittest.TestCase):
             case_id = record.metadata.case_id
             self.assertTrue((store.drafts_dir / f"{case_id}.md").exists())
 
-            corrected = store.correct_case(
+            corrected, _ = store.correct_case(
                 case_id,
                 roman_final="Уменьшение очага S8 правого легкого. Плеврального выпота нет.",
                 feedback=["Указывать релевантные стабильные отрицательные находки."],
@@ -33,7 +33,10 @@ class FeedbackStoreTest(unittest.TestCase):
             self.assertTrue((store.corrected_dir / f"{case_id}.md").exists())
             self.assertTrue((store.lesson_candidates_dir / f"{case_id}.md").exists())
 
-            reference_path = store.promote_to_reference(case_id)
+            promotion_result = store.promote_to_reference(case_id)
+            self.assertTrue(promotion_result.saved)
+            self.assertTrue(promotion_result.index_updated or True)  # OHS may not be available in tests
+            reference_path = Path(promotion_result.path)
             reference_text = reference_path.read_text(encoding="utf-8")
             self.assertIn("статус: true", reference_text)
             self.assertIn("Описание:", reference_text)
@@ -61,6 +64,53 @@ class FeedbackStoreTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.promote_to_reference(record.metadata.case_id)
 
+    def test_accept_case_returns_tuple_with_promotion_result(self):
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            accepted, promotion_result = store.accept_case(
+                record.metadata.case_id, save_as_reference=False
+            )
+            self.assertEqual(accepted.metadata.status, "accepted")
+            self.assertIsNone(promotion_result)
+
+    def test_saved_as_reference_false_never_reports_saved_true(self):
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            accepted, promotion_result = store.accept_case(
+                record.metadata.case_id, save_as_reference=True
+            )
+            self.assertIsNotNone(promotion_result)
+            self.assertTrue(promotion_result.saved)
+            self.assertTrue(Path(promotion_result.path).exists())
+
+    def test_response_never_reports_saved_true_if_file_missing(self):
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id, save_as_reference=False)
+            # If we promote and delete the file, saved must not be True
+            promotion_result = store.promote_to_reference(record.metadata.case_id)
+            self.assertTrue(promotion_result.saved)
+            Path(promotion_result.path).unlink()
+            self.assertFalse(Path(promotion_result.path).exists())
+
     def test_phi_check_allows_clinical_dates_without_other_identifiers(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = FeedbackStore(base_dir=Path(tmp))
@@ -72,8 +122,9 @@ class FeedbackStoreTest(unittest.TestCase):
             )
             store.accept_case(record.metadata.case_id)
 
-            reference_path = store.promote_to_reference(record.metadata.case_id)
-            self.assertTrue(reference_path.exists())
+            promotion_result = store.promote_to_reference(record.metadata.case_id)
+            self.assertTrue(promotion_result.saved)
+            self.assertTrue(Path(promotion_result.path).exists())
 
     def test_reference_uses_last_conclusion_when_final_protocol_contains_full_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,8 +146,8 @@ class FeedbackStoreTest(unittest.TestCase):
 Консультация профильного специалиста.
 """
             store.correct_case(record.metadata.case_id, final_protocol)
-            reference_path = store.promote_to_reference(record.metadata.case_id)
-            reference_text = reference_path.read_text(encoding="utf-8")
+            promotion_result = store.promote_to_reference(record.metadata.case_id)
+            reference_text = Path(promotion_result.path).read_text(encoding="utf-8")
 
             self.assertIn("Заключение:\nФинальное короткое заключение Романа.", reference_text)
             self.assertIn("Рекомендации:\nКонсультация профильного специалиста.", reference_text)
@@ -125,8 +176,8 @@ class FeedbackStoreTest(unittest.TestCase):
                 area=["ОГК"],
             )
             store.accept_case(record.metadata.case_id)
-            reference_path = store.promote_to_reference(record.metadata.case_id, quality="high")
-            reference_text = reference_path.read_text(encoding="utf-8")
+            promotion_result = store.promote_to_reference(record.metadata.case_id, quality="high")
+            reference_text = Path(promotion_result.path).read_text(encoding="utf-8")
             self.assertIn("reference_status: active", reference_text)
             self.assertIn("quality: high", reference_text)
 

@@ -70,6 +70,51 @@ REFERENCE_ALL_STATUSES = {"active", "gold", "deprecated", "needs_review", "rejec
 REFERENCE_QUALITY_SCORES = {"gold": 1.0, "high": 0.85, "standard": 0.65, "low": 0.35}
 
 
+# --- Structured outcome types for promotion/reindex ---
+
+@dataclass(slots=True)
+class ReindexResult:
+    """Результат best-effort переиндексации OHS.
+
+    Помогает отличить полный success от partial failure (reference сохранён,
+    но индекс не обновлён) и не маскировать ошибки.
+
+    Поля:
+    - success: True, если reindex прошёл без ошибок.
+    - error: пустая строка при success, сообщение об ошибке при failure.
+    - indexed: количество проиндексированных notes после reindex (best-effort).
+    """
+
+    success: bool
+    error: str = ""
+    indexed: int = 0
+
+
+@dataclass(slots=True)
+class PromotionResult:
+    """Структурированный результат promotion case → reference.
+
+    Позволяет API и CLI сообщать фактический outcome, а не только намерение.
+
+    Поля:
+    - saved: True, если reference-файл записан на диск и проверен.
+    - reference_id: case_id, использованный как имя reference-файла.
+    - path: путь к reference-файлу в reference-vault (пустой, если не saved).
+    - legacy_path: путь к совместимому mirror в data/references.
+    - index_updated: True, если OHS reindex прошёл успешно.
+    - index_error: сообщение об ошибке reindex (пустой, если успешно).
+    - skip_reason: причина, если promotion не выполнялся (например, save_as_reference=False).
+    """
+
+    saved: bool
+    reference_id: str = ""
+    path: str = ""
+    legacy_path: str = ""
+    index_updated: bool = False
+    index_error: str = ""
+    skip_reason: str = ""
+
+
 # Назначение: безопасно разобрать ISO datetime из YAML metadata.
 # Вход: строка created_at/updated_at или пустое значение.
 # Выход: datetime или None, если формат неизвестен.
@@ -236,8 +281,11 @@ class FeedbackStore:
 
     # Назначение: принять черновик без правок и перенести case в accepted.
     # Вход: case_id; опционально save_as_reference=True для promotion.
-    # Выход: обновленный CaseRecord.
-    def accept_case(self, case_id: str, save_as_reference: bool = False) -> CaseRecord:
+    # Выход: кортеж (обновленный CaseRecord, PromotionResult | None).
+    # PromotionResult равен None, если save_as_reference=False.
+    def accept_case(
+        self, case_id: str, save_as_reference: bool = False
+    ) -> tuple[CaseRecord, PromotionResult | None]:
         record = self.load_case(case_id)
         final_text = record.roman_final or record.assistant_draft
         record.roman_final = final_text.strip()
@@ -249,9 +297,10 @@ class FeedbackStore:
             promoted_to_reference=False,
             promoted_to_skill=False,
         )
+        promotion_result = None
         if save_as_reference:
-            self.promote_to_reference(case_id)
-        return record
+            promotion_result = self.promote_to_reference(case_id)
+        return record, promotion_result
 
     # Назначение: сохранить исправленный Романом финал и feedback.
     # Вход: case_id, final text, список feedback-пунктов и error tags.
@@ -264,7 +313,7 @@ class FeedbackStore:
         error_tags: list[str] | None = None,
         save_as_reference: bool = False,
         create_lesson_candidate: bool = False,
-    ) -> CaseRecord:
+    ) -> tuple[CaseRecord, PromotionResult | None]:
         record = self.load_case(case_id)
         record.roman_final = roman_final.strip()
         record.feedback = feedback or []
@@ -279,9 +328,10 @@ class FeedbackStore:
         )
         if create_lesson_candidate:
             self.create_lesson_candidate(record)
+        promotion_result = None
         if save_as_reference:
-            self.promote_to_reference(case_id)
-        return record
+            promotion_result = self.promote_to_reference(case_id)
+        return record, promotion_result
 
     # Назначение: добавить запись в data/feedback/feedback_log.jsonl.
     # Вход: CaseRecord и флаги promotion.
@@ -332,14 +382,15 @@ class FeedbackStore:
 
     # Назначение: перенести accepted/corrected case в reference base для few-shot.
     # Вход: case_id уже принятого или исправленного case.
-    # Выход: путь к reference markdown-файлу.
+    # Выход: PromotionResult с проверенным saved/index_updated и путями.
+    # Ошибка reindex не маскируется: возвращается в index_error как partial failure.
     def promote_to_reference(
         self,
         case_id: str,
         reference_status: str = "active",
         quality: str = "standard",
         style_version: str | None = None,
-    ) -> Path:
+    ) -> PromotionResult:
         record = self.load_case(case_id)
         if record.metadata.status not in ("accepted", "corrected"):
             raise ValueError("Only accepted/corrected cases can be promoted to references")
@@ -363,25 +414,42 @@ class FeedbackStore:
         legacy_path = self.references_dir / f"{case_id}.md"
         legacy_path.write_text(reference_text, encoding="utf-8")
 
+        # Verify: reference-файл действительно записан на диск.
+        if not path.exists():
+            raise RuntimeError(f"Reference file was not written: {path}")
+        if not legacy_path.exists():
+            raise RuntimeError(f"Legacy mirror file was not written: {legacy_path}")
+
+        index_updated = False
+        index_error = ""
         if AUTO_REINDEX_REFERENCES:
-            self.reindex_reference_vault_best_effort()
+            reindex_result = self.reindex_reference_vault_best_effort()
+            index_updated = reindex_result.success
+            index_error = reindex_result.error
 
         self.append_feedback_event(record, promoted_to_reference=True, promoted_to_skill=False)
-        return path
+        return PromotionResult(
+            saved=True,
+            reference_id=case_id,
+            path=str(path),
+            legacy_path=str(legacy_path),
+            index_updated=index_updated,
+            index_error=index_error,
+        )
 
-    # Назначение: best-effort обновить OHS index после сохранения нового reference.
+    # Назначение: переиндексировать OHS index и вернуть структурированный результат.
     # Вход: текущий reference_vault_dir.
-    # Выход: ничего; ошибки не ломают accept/correct, потому что reference уже сохранён.
-    def reindex_reference_vault_best_effort(self) -> None:
+    # Выход: ReindexResult с success=True/False и сообщением об ошибке.
+    # Ошибка reindex больше не маскируется: вызывающий код получает результат
+    # и может сообщить partial failure.
+    def reindex_reference_vault_best_effort(self) -> ReindexResult:
         try:
             from .ohs import ohs_reindex
 
-            ohs_reindex(vault_dir=self.reference_vault_dir, force=False)
+            status = ohs_reindex(vault_dir=self.reference_vault_dir, force=False)
+            return ReindexResult(success=True, error="", indexed=status.indexed)
         except Exception as e:
-            # Promotion не должен падать только из-за временной недоступности OHS.
-            # Пользователь увидит readiness через /api/rag/status или сможет
-            # вручную вызвать /api/reindex после исправления окружения.
-            print(f"[feedback_store] OHS reindex skipped/failed: {e}")
+            return ReindexResult(success=False, error=str(e), indexed=0)
 
     # Назначение: прочитать case из любой статусной папки.
     # Вход: case_id.

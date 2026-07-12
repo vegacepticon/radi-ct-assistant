@@ -127,11 +127,25 @@ class AcceptRequest(BaseModel):
     save_as_reference: bool = False
 
 
+class ReferenceOutcome(BaseModel):
+    """Структурированный результат promotion/reindex для честного отчета."""
+
+    requested: bool = False
+    saved: bool = False
+    reference_id: str = ""
+    path: str = ""
+    legacy_path: str = ""
+    index_updated: bool = False
+    index_error: str = ""
+    skip_reason: str = ""
+
+
 class CaseActionResponse(BaseModel):
     case_id: str
     status: str
     path: str
     saved_as_reference: bool = False
+    reference: ReferenceOutcome = Field(default_factory=ReferenceOutcome)
 
 
 class CorrectRequest(BaseModel):
@@ -176,6 +190,7 @@ class CaseDetail(BaseModel):
 class PromoteResponse(BaseModel):
     case_id: str
     reference_path: str
+    reference: ReferenceOutcome = Field(default_factory=ReferenceOutcome)
 
 class ReferenceLifecycleUpdate(BaseModel):
     reference_status: str | None = Field(None, description="active/gold/deprecated/needs_review/rejected")
@@ -324,12 +339,36 @@ async def create_draft(req: DraftRequest):
     )
 
 
+def _promotion_outcome(
+    store: FeedbackStore,
+    promotion_result: Any,
+    requested: bool,
+) -> ReferenceOutcome:
+    """Преобразовать PromotionResult в API ReferenceOutcome."""
+    if not requested:
+        return ReferenceOutcome(requested=False, skip_reason="save_as_reference=False")
+    if promotion_result is None:
+        return ReferenceOutcome(requested=True, saved=False, skip_reason="promotion_not_performed")
+    return ReferenceOutcome(
+        requested=True,
+        saved=promotion_result.saved,
+        reference_id=promotion_result.reference_id,
+        path=promotion_result.path,
+        legacy_path=promotion_result.legacy_path,
+        index_updated=promotion_result.index_updated,
+        index_error=promotion_result.index_error,
+        skip_reason=promotion_result.skip_reason,
+    )
+
+
 @app.post("/api/accept/{case_id}", response_model=CaseActionResponse)
 async def accept_case(case_id: str, req: AcceptRequest):
     """Принимает draft без правок и пишет feedback event."""
     store = get_feedback_store()
     try:
-        record = store.accept_case(case_id, save_as_reference=req.save_as_reference)
+        record, promotion_result = store.accept_case(
+            case_id, save_as_reference=req.save_as_reference
+        )
     except FileNotFoundError:
         raise HTTPException(404, f"Case not found: {case_id}")
     except ValueError as e:
@@ -339,7 +378,8 @@ async def accept_case(case_id: str, req: AcceptRequest):
         case_id=record.metadata.case_id,
         status=record.metadata.status,
         path=str(store.accepted_dir / f"{record.metadata.case_id}.md"),
-        saved_as_reference=req.save_as_reference,
+        saved_as_reference=req.save_as_reference and promotion_result is not None and promotion_result.saved,
+        reference=_promotion_outcome(store, promotion_result, req.save_as_reference),
     )
 
 
@@ -351,7 +391,7 @@ async def correct_case(case_id: str, req: CorrectRequest):
 
     store = get_feedback_store()
     try:
-        record = store.correct_case(
+        record, promotion_result = store.correct_case(
             case_id,
             roman_final=req.roman_final,
             feedback=_normalize_feedback(req.feedback),
@@ -368,7 +408,8 @@ async def correct_case(case_id: str, req: CorrectRequest):
         case_id=record.metadata.case_id,
         status=record.metadata.status,
         path=str(store.corrected_dir / f"{record.metadata.case_id}.md"),
-        saved_as_reference=req.save_as_reference,
+        saved_as_reference=req.save_as_reference and promotion_result is not None and promotion_result.saved,
+        reference=_promotion_outcome(store, promotion_result, req.save_as_reference),
     )
 
 
@@ -444,12 +485,25 @@ async def promote_case_to_reference(case_id: str):
     """
     store = get_feedback_store()
     try:
-        path = store.promote_to_reference(case_id)
+        promotion_result = store.promote_to_reference(case_id)
     except FileNotFoundError:
         raise HTTPException(404, f"Case not found: {case_id}")
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return PromoteResponse(case_id=case_id, reference_path=str(path))
+    return PromoteResponse(
+        case_id=case_id,
+        reference_path=promotion_result.path,
+        reference=ReferenceOutcome(
+            requested=True,
+            saved=promotion_result.saved,
+            reference_id=promotion_result.reference_id,
+            path=promotion_result.path,
+            legacy_path=promotion_result.legacy_path,
+            index_updated=promotion_result.index_updated,
+            index_error=promotion_result.index_error,
+            skip_reason=promotion_result.skip_reason,
+        ),
+    )
 
 
 @app.post("/api/reindex", response_model=ReindexResponse)

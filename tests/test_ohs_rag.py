@@ -24,13 +24,15 @@ class ObsidianHybridRagTest(unittest.TestCase):
                 clinical_context="синтетический пример",
                 comparison=True,
             )
-            corrected = store.correct_case(
+            corrected, _ = store.correct_case(
                 record.metadata.case_id,
                 roman_final="Уменьшение очага S8 правого легкого. Плеврального выпота нет.",
                 feedback=["Указывать плевру, если она релевантно отрицательная."],
             )
 
-            reference_path = store.promote_to_reference(corrected.metadata.case_id)
+            promotion_result = store.promote_to_reference(corrected.metadata.case_id)
+            self.assertTrue(promotion_result.saved)
+            reference_path = Path(promotion_result.path)
             legacy_path = store.references_dir / f"{corrected.metadata.case_id}.md"
 
             self.assertEqual(reference_path.parent, store.reference_vault_dir)
@@ -41,6 +43,28 @@ class ObsidianHybridRagTest(unittest.TestCase):
             self.assertIn("задача: conclusion", text)
             self.assertIn("Описание:", text)
             self.assertIn("Заключение:", text)
+
+    def test_promotion_reports_reindex_failure_as_partial_success(self):
+        """Reference saved + reindex failure: saved=True, index_updated=False."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADI_CT_AUTO_REINDEX"] = "1"
+            os.environ["RADI_CT_BASE_DIR"] = tmp
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Описание: синтетический очаг S8 правого легкого.",
+                assistant_draft="Уменьшение очага S8 правого легкого.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id, save_as_reference=False)
+
+            # Simulate OHS reindex failure
+            with patch("src.ohs.ohs_reindex", side_effect=RuntimeError("OHS command not found")):
+                promotion_result = store.promote_to_reference(record.metadata.case_id)
+
+            self.assertTrue(promotion_result.saved)
+            self.assertTrue(Path(promotion_result.path).exists())
+            self.assertFalse(promotion_result.index_updated)
+            self.assertIn("OHS command not found", promotion_result.index_error)
 
     def test_ohs_retriever_parses_search_results_and_reference_file(self):
         with tempfile.TemporaryDirectory() as tmp:

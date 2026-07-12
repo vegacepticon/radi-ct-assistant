@@ -94,15 +94,24 @@ def cmd_draft(args: argparse.Namespace) -> None:
 # Выход: accepted case, feedback event, опционально reference.
 def cmd_accept(args: argparse.Namespace) -> None:
     store = FeedbackStore(base_dir=STORE_BASE_DIR)
-    record = store.accept_case(args.case_id, save_as_reference=args.save_as_reference)
-    print_json(
-        {
-            "case_id": record.metadata.case_id,
-            "status": record.metadata.status,
-            "path": str(store.accepted_dir / f"{record.metadata.case_id}.md"),
-            "saved_as_reference": args.save_as_reference,
-        }
+    record, promotion_result = store.accept_case(
+        args.case_id, save_as_reference=args.save_as_reference
     )
+    result_dict = {
+        "case_id": record.metadata.case_id,
+        "status": record.metadata.status,
+        "path": str(store.accepted_dir / f"{record.metadata.case_id}.md"),
+        "saved_as_reference": args.save_as_reference,
+    }
+    if promotion_result is not None:
+        result_dict["reference"] = {
+            "saved": promotion_result.saved,
+            "reference_id": promotion_result.reference_id,
+            "path": promotion_result.path,
+            "index_updated": promotion_result.index_updated,
+            "index_error": promotion_result.index_error,
+        }
+    print_json(result_dict)
 
 
 # Назначение: сохранить исправленный финал Романа и объяснение правок.
@@ -112,7 +121,7 @@ def cmd_correct(args: argparse.Namespace) -> None:
     store = FeedbackStore(base_dir=STORE_BASE_DIR)
     final_text = read_text_arg(args.final)
     feedback = parse_feedback_items(read_text_arg(args.feedback)) if args.feedback else []
-    record = store.correct_case(
+    record, promotion_result = store.correct_case(
         args.case_id,
         roman_final=final_text,
         feedback=feedback,
@@ -120,17 +129,24 @@ def cmd_correct(args: argparse.Namespace) -> None:
         save_as_reference=args.save_as_reference,
         create_lesson_candidate=args.create_lesson_candidate,
     )
-    print_json(
-        {
-            "case_id": record.metadata.case_id,
-            "status": record.metadata.status,
-            "path": str(store.corrected_dir / f"{record.metadata.case_id}.md"),
-            "feedback_items": len(record.feedback),
-            "error_tags": record.error_tags,
-            "saved_as_reference": args.save_as_reference,
-            "lesson_candidate": args.create_lesson_candidate,
+    result_dict = {
+        "case_id": record.metadata.case_id,
+        "status": record.metadata.status,
+        "path": str(store.corrected_dir / f"{record.metadata.case_id}.md"),
+        "feedback_items": len(record.feedback),
+        "error_tags": record.error_tags,
+        "saved_as_reference": args.save_as_reference,
+        "lesson_candidate": args.create_lesson_candidate,
+    }
+    if promotion_result is not None:
+        result_dict["reference"] = {
+            "saved": promotion_result.saved,
+            "reference_id": promotion_result.reference_id,
+            "path": promotion_result.path,
+            "index_updated": promotion_result.index_updated,
+            "index_error": promotion_result.index_error,
         }
-    )
+    print_json(result_dict)
 
 
 # Назначение: явно перенести accepted/corrected case в reference base.
@@ -138,13 +154,25 @@ def cmd_correct(args: argparse.Namespace) -> None:
 # Выход: reference markdown в data/references.
 def cmd_promote(args: argparse.Namespace) -> None:
     store = FeedbackStore(base_dir=STORE_BASE_DIR)
-    path = store.promote_to_reference(
+    promotion_result = store.promote_to_reference(
         args.case_id,
         reference_status=args.reference_status,
         quality=args.quality,
         style_version=args.style_version,
     )
-    print_json({"case_id": args.case_id, "reference_path": str(path)})
+    print_json(
+        {
+            "case_id": args.case_id,
+            "reference_path": promotion_result.path,
+            "reference": {
+                "saved": promotion_result.saved,
+                "reference_id": promotion_result.reference_id,
+                "path": promotion_result.path,
+                "index_updated": promotion_result.index_updated,
+                "index_error": promotion_result.index_error,
+            },
+        }
+    )
 
 
 # Назначение: показать reference base с lifecycle metadata.
