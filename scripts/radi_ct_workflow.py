@@ -790,6 +790,59 @@ def cmd_lessons(args: argparse.Namespace) -> None:
     print_result(data, args.json, format_lessons_response(data))
 
 
+# Назначение: команда `audit-status` — показать состояние RadiCT cases и инварианты.
+# Вход: опционально --strict для проверки инвариантов с ненулевым exit code.
+# Выход: Markdown-отчет со статистикой cases, references, session state.
+def cmd_audit_status(args: argparse.Namespace) -> None:
+    cases = radi_ct_api.request_json("GET", "/api/cases")
+    rag_data = radi_ct_api.request_json("GET", "/api/rag/status")
+
+    draft_count = sum(1 for c in cases if c.get("status") == "draft")
+    accepted_count = sum(1 for c in cases if c.get("status") == "accepted")
+    corrected_count = sum(1 for c in cases if c.get("status") == "corrected")
+
+    # Try to get session state listing
+    pending = {}
+    try:
+        state_data = radi_ct_api.request_json("GET", "/api/session/states")
+        pending = {k: v for k, v in state_data.items() if v.get("state") == "capture_pending"}
+    except Exception:
+        pass
+
+    issues = []
+    if draft_count > 0:
+        issues.append(f"- {draft_count} незавершенных draft cases")
+    if pending:
+        issues.append(f"- {len(pending)} capture_pending sessions")
+    if rag_data.get("available") and rag_data.get("indexed", 0) < rag_data.get("total", 0):
+        issues.append(f"- Indexed {rag_data.get('indexed')}/{rag_data.get('total')} notes")
+
+    markdown_lines = [
+        "## RadiCT audit status",
+        f"- Draft cases: {draft_count}",
+        f"- Accepted cases: {accepted_count}",
+        f"- Corrected cases: {corrected_count}",
+        f"- RAG available: `{rag_data.get('available', False)}`",
+        f"- RAG indexed: `{rag_data.get('indexed', 0)}/{rag_data.get('total', 0)}`",
+        f"- Capture pending: {len(pending)}",
+    ]
+    if issues:
+        markdown_lines.append("")
+        markdown_lines.append("**Issues:**")
+        markdown_lines.extend(issues)
+
+    if args.strict and issues:
+        markdown_lines.append("")
+        markdown_lines.append("**--strict: FAIL**")
+        print("\n".join(markdown_lines))
+        raise SystemExit(1)
+    elif args.strict:
+        markdown_lines.append("")
+        markdown_lines.append("**--strict: PASS**")
+
+    print("\n".join(markdown_lines))
+
+
 # Назначение: собрать CLI parser для workflow-wrapper.
 # Вход: ничего.
 # Выход: argparse.ArgumentParser с командами health/message/accept/correct/cases/case/promote/lessons.
@@ -885,6 +938,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     lessons = subparsers.add_parser("lessons", help="List lesson candidates")
     lessons.set_defaults(func=cmd_lessons)
+
+    audit_status = subparsers.add_parser("audit-status", help="Show case/reference/session audit status")
+    audit_status.add_argument("--strict", action="store_true", help="Non-zero exit on invariant violations")
+    audit_status.set_defaults(func=cmd_audit_status)
 
     return parser
 

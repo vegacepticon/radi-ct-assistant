@@ -750,6 +750,13 @@ async def clear_session_state(session_id: str):
     return {"status": "ok", "session_id": session_id}
 
 
+@app.get("/api/session/states")
+async def list_session_states():
+    """Показать все активные session→case mappings."""
+    store = get_session_state_store()
+    return store.list_active()
+
+
 @app.get("/api/health")
 async def health():
     """Проверка работоспособности."""

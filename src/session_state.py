@@ -56,19 +56,56 @@ class SessionStateStore:
         state: str = "awaiting_feedback",
         task: str = "conclusion",
         rag_status: str = "unknown",
+        skip_reason: str = "",
     ) -> dict[str, Any]:
-        """Связать session_id с активным case_id."""
+        """Связать session_id с активным case_id.
+
+        state может быть:
+        - awaiting_feedback: draft создан, ждем accept/correct
+        - accepted: case принят
+        - corrected: case исправлен
+        - capture_pending: операция не завершена, требуется recovery
+        - skipped: capture пропущен с конкретной причиной
+        """
         data = self._load()
         entry = {
             "case_id": case_id,
             "state": state,
             "task": task,
             "rag_status": rag_status,
+            "skip_reason": skip_reason,
             "updated_at": _now_iso(),
         }
         data[session_id] = entry
         self._save(data)
         return entry
+
+    def set_capture_pending(
+        self,
+        session_id: str,
+        case_id: str,
+        reason_code: str = "ambiguous",
+        task: str = "conclusion",
+        rag_status: str = "unknown",
+    ) -> dict[str, Any]:
+        """Отметить case как capture_pending — операция не завершена."""
+        return self.set_active_case(
+            session_id=session_id,
+            case_id=case_id,
+            state="capture_pending",
+            task=task,
+            rag_status=rag_status,
+            skip_reason=reason_code,
+        )
+
+    def list_pending(self) -> dict[str, Any]:
+        """Показать все session с capture_pending state."""
+        data = self._load()
+        return {
+            sid: entry
+            for sid, entry in data.items()
+            if entry.get("state") == "capture_pending"
+        }
 
     def get_active_case(self, session_id: str) -> dict[str, Any] | None:
         """Получить активный case_id для session_id, или None."""
