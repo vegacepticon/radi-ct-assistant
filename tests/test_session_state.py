@@ -192,3 +192,46 @@ class PrepareAndSaveDraftTest(unittest.TestCase):
 
 # Import app lazily to avoid env issues at import time
 from src.main import app  # noqa: E402
+from src.radi_ct_guard import check_completion_invariant, FAIL_VISIBLE_MESSAGE  # noqa: E402
+from src.feedback_store import PromotionResult  # noqa: E402
+
+
+class RadiCtGuardTest(unittest.TestCase):
+    def test_invariant_passes_with_reference_id(self):
+        result = check_completion_invariant(
+            reference_result=PromotionResult(
+                saved=True, reference_id="2026-07-12-001", path="/tmp/ref.md"
+            )
+        )
+        self.assertTrue(result.passed)
+        self.assertEqual(result.outcome, "reference_id")
+        self.assertEqual(result.reference_id, "2026-07-12-001")
+
+    def test_invariant_passes_with_skip_reason(self):
+        result = check_completion_invariant(skip_reason="explicit_do_not_save")
+        self.assertTrue(result.passed)
+        self.assertEqual(result.outcome, "skip_reason")
+
+    def test_invariant_passes_with_capture_pending(self):
+        result = check_completion_invariant(
+            capture_pending=True, capture_pending_reason="ambiguous_final"
+        )
+        self.assertTrue(result.passed)
+        self.assertEqual(result.outcome, "capture_pending")
+
+    def test_invariant_fails_on_silent_completion(self):
+        result = check_completion_invariant()
+        self.assertFalse(result.passed)
+        self.assertEqual(result.outcome, "violation")
+        self.assertIn("violation", result.message.lower())
+
+    def test_invariant_fails_when_reference_not_saved(self):
+        result = check_completion_invariant(
+            reference_result=PromotionResult(saved=False, skip_reason="")
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.outcome, "violation")
+
+    def test_fail_visible_message_exists(self):
+        self.assertIn("RadiCT workflow", FAIL_VISIBLE_MESSAGE)
+        self.assertIn("capture_pending", FAIL_VISIBLE_MESSAGE)
