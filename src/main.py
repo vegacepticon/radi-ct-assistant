@@ -356,6 +356,7 @@ async def prepare_radi_ct(req: PrepareRequest):
         raise HTTPException(400, "input_text не может быть пустым")
 
     normalized = {
+        "input_text": req.input_text,
         "task": req.task,
         "area": req.area,
         "clinical_context": req.clinical_context,
@@ -426,17 +427,22 @@ async def save_draft(req: SaveDraftRequest):
     prepared = req.prepared or {}
     input_text = prepared.get("input_text", "")
     if not input_text:
+        # Prepare returns input_text inside normalized dict
+        normalized = prepared.get("normalized", {})
+        input_text = normalized.get("input_text", "")
+    if not input_text:
         raise HTTPException(400, "prepared.input_text is required")
 
     store = get_feedback_store()
+    normalized = prepared.get("normalized", {})
     record = store.create_case(
         input_text=input_text,
         assistant_draft=req.assistant_draft.strip(),
-        task=prepared.get("task", "conclusion"),
-        area=prepared.get("area", []),
-        clinical_context=prepared.get("clinical_context", ""),
-        comparison=prepared.get("comparison", False),
-        references_used=req.references_used or prepared.get("references_used", []),
+        task=prepared.get("task", normalized.get("task", "conclusion")),
+        area=prepared.get("area", normalized.get("area", [])),
+        clinical_context=prepared.get("clinical_context", normalized.get("clinical_context", "")),
+        comparison=prepared.get("comparison", normalized.get("comparison", False)),
+        references_used=req.references_used or prepared.get("references_used", normalized.get("references_used", [])),
     )
     return DraftResponse(
         case_id=record.metadata.case_id,
