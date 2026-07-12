@@ -584,6 +584,76 @@ def cmd_rag_context(args: argparse.Namespace) -> None:
     print_result(data, args.json, format_rag_context_response(data))
 
 
+# Назначение: команда `prepare` — единая operational entry point.
+# Вход: сообщение/описание в формате workflow message или свободный текст.
+# Выход: structured JSON с normalized metadata, prompt, references, rag_status.
+# Hermes использует prompt для генерации черновика, затем вызывает save-draft.
+def cmd_prepare(args: argparse.Namespace) -> None:
+    workflow_message = parse_workflow_message(read_text(args.input))
+    payload = {
+        "input_text": workflow_message.input_text,
+        "task": workflow_message.task,
+        "area": workflow_message.area,
+        "clinical_context": workflow_message.clinical_context,
+        "comparison": workflow_message.comparison,
+        "mode": workflow_message.mode,
+        "top_k": args.top_k,
+    }
+    data = radi_ct_api.request_json("POST", "/api/prepare", payload=payload)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    # Markdown output for Hermes
+    refs = data.get("references") or []
+    rag = data.get("rag_status", "unknown")
+    lines = [
+        "## RadiCT prepare",
+        f"- Task: `{data.get('normalized', {}).get('task', '')}`",
+        f"- Area: {', '.join(data.get('normalized', {}).get('area', []) or []) or '—'}",
+        f"- RAG status: `{rag}`",
+        f"- References found: {len(refs)}",
+    ]
+    for ref in refs[:5]:
+        lines.append(f"  - `{ref.get('filepath', '')}` — score {ref.get('similarity', 0)}")
+    lines.extend(["", "**Prompt for Hermes:**", "```text", data.get("prompt", ""), "```", ""])
+    lines.append("Next: generate draft from prompt, then `save-draft --prepared PREPARED_JSON --draft DRAFT_FILE`")
+    print("\n".join(lines))
+
+
+# Назначение: команда `save-draft` — создать draft case из prepared JSON + assistant_draft.
+# Вход: --prepared (JSON from prepare), --draft (file with Hermes-generated draft text).
+# Выход: case_id для последующего accept/correct.
+def cmd_save_draft(args: argparse.Namespace) -> None:
+    prepared_json = read_text(args.prepared) if args.prepared != "-" else sys.stdin.read()
+    try:
+        prepared = json.loads(prepared_json)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"Invalid prepared JSON: {e}")
+
+    draft_text = read_text(args.draft) if args.draft else ""
+    if not draft_text.strip():
+        raise SystemExit("save-draft requires --draft DRAFT_FILE with Hermes-generated draft text")
+
+    payload = {
+        "prepared": prepared,
+        "assistant_draft": draft_text.strip(),
+        "references_used": prepared.get("references_used", []),
+    }
+    data = radi_ct_api.request_json("POST", "/api/save-draft", payload=payload)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    refs = data.get("references_used") or []
+    refs_text = f"\n- References: {len(refs)}" if refs else ""
+    print(
+        f"## RadiCT draft сохранён\n"
+        f"- Case ID: `{data.get('case_id', '')}`\n"
+        f"- Файл: `{data.get('path', '')}`{refs_text}\n"
+        f"\n**Черновик:**\n{preview(data.get('draft', ''))}\n\n"
+        f"Дальше: `accept CASE_ID` или `correct CASE_ID --final ...`"
+    )
+
+
 # Назначение: команда `message` — создать draft из Telegram/Hermes-сообщения.
 # Вход:
 #   args.input — файл сообщения или stdin.
@@ -743,6 +813,16 @@ def build_parser() -> argparse.ArgumentParser:
     rag_context.add_argument("input", help="Message markdown/text file, or '-' for stdin")
     rag_context.add_argument("--top-k", type=int, default=5, help="Number of references to retrieve")
     rag_context.set_defaults(func=cmd_rag_context)
+
+    prepare = subparsers.add_parser("prepare", help="Unified operational entry point: parse + RAG + metadata")
+    prepare.add_argument("input", help="Message markdown/text file, or '-' for stdin")
+    prepare.add_argument("--top-k", type=int, default=5, help="Number of references to retrieve")
+    prepare.set_defaults(func=cmd_prepare)
+
+    save_draft = subparsers.add_parser("save-draft", help="Create draft case from prepared JSON + assistant draft")
+    save_draft.add_argument("--prepared", required=True, help="JSON from prepare, or '-' for stdin")
+    save_draft.add_argument("--draft", help="File with Hermes-generated draft text")
+    save_draft.set_defaults(func=cmd_save_draft)
 
     message = subparsers.add_parser("message", help="Create draft from Telegram/Hermes message")
     message.add_argument("input", help="Message markdown/text file, or '-' for stdin")

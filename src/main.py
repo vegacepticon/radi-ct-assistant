@@ -14,6 +14,7 @@ from .parser import parse_directory
 from .config import BASE_DIR, RAG_BACKEND, REFERENCE_VAULT_DIR, REFERENCES_DIR
 from .case_schema import InputType, TaskName
 from .feedback_store import FeedbackStore
+from .session_state import SessionStateStore
 
 app = FastAPI(title="RadiCT Assistant", version="0.1.0")
 
@@ -28,6 +29,14 @@ _retriever: Any | None = None
 def get_feedback_store() -> FeedbackStore:
     base_dir = Path(os.getenv("RADI_CT_BASE_DIR", str(BASE_DIR))).resolve()
     return FeedbackStore(base_dir=base_dir)
+
+
+# Назначение: получить session-safe store для связи Hermes session → case_id.
+# Вход: переменная окружения RADI_CT_BASE_DIR.
+# Выход: SessionStateStore.
+def get_session_state_store() -> SessionStateStore:
+    base_dir = Path(os.getenv("RADI_CT_BASE_DIR", str(BASE_DIR))).resolve()
+    return SessionStateStore(base_dir=base_dir)
 
 
 # Назначение: лениво создать embedding indexer.
@@ -114,6 +123,36 @@ class RagContextResponse(BaseModel):
     prompt: str
     references_used: list[str]
     references: list[RagReferenceInfo]
+
+
+class PrepareRequest(BaseModel):
+    """Единая operational entry point: prepare = parse + RAG + metadata."""
+
+    input_text: str = Field(..., description="Входной текст: описание, находки или markdown")
+    task: TaskName = Field("conclusion", description="conclusion / description / description_and_conclusion")
+    area: list[str] = Field(default_factory=list)
+    clinical_context: str = Field("")
+    comparison: bool = False
+    mode: str = Field("fast")
+    top_k: int = Field(5, ge=1, le=10)
+
+
+class PrepareResponse(BaseModel):
+    """Структурированный результат prepare для Hermes."""
+
+    normalized: dict[str, Any] = Field(default_factory=dict)
+    prompt: str = ""
+    references_used: list[str] = Field(default_factory=list)
+    references: list[RagReferenceInfo] = Field(default_factory=list)
+    rag_status: str = "unknown"  # used / no_hits / unavailable / error
+
+
+class SaveDraftRequest(BaseModel):
+    """Создать draft case из prepared JSON + assistant_draft."""
+
+    prepared: dict[str, Any] = Field(..., description="JSON from prepare response")
+    assistant_draft: str = Field(..., description="Hermes-generated draft text")
+    references_used: list[str] = Field(default_factory=list)
 
 
 class DraftResponse(BaseModel):
@@ -303,6 +342,108 @@ def _build_rag_context(req: RagContextRequest) -> RagContextResponse:
 async def build_rag_context(req: RagContextRequest):
     """Возвращает локальный few-shot/RAG prompt для Hermes без вызова LLM."""
     return _build_rag_context(req)
+
+
+@app.post("/api/prepare", response_model=PrepareResponse)
+async def prepare_radi_ct(req: PrepareRequest):
+    """Единая operational entry point: parse + RAG retrieval + metadata.
+
+    Возвращает structured JSON: normalized metadata, prompt, references,
+    rag_status. Hermes использует prompt для генерации черновика, затем
+    вызывает /api/save-draft с prepared JSON и assistant_draft.
+    """
+    if not req.input_text.strip():
+        raise HTTPException(400, "input_text не может быть пустым")
+
+    normalized = {
+        "task": req.task,
+        "area": req.area,
+        "clinical_context": req.clinical_context,
+        "comparison": req.comparison,
+        "mode": req.mode,
+    }
+
+    # RAG retrieval
+    rag_status = "unknown"
+    prompt = ""
+    references_used: list[str] = []
+    references: list[RagReferenceInfo] = []
+
+    try:
+        retriever = get_retriever()
+        area = req.area[0] if req.area else ""
+        refs = retriever.search(
+            req.input_text,
+            area=area,
+            task=req.task,
+            top_k=req.top_k,
+        )
+        from .prompt_builder import build_prompt
+
+        prompt = build_prompt(
+            req.input_text,
+            refs,
+            mode=req.mode,
+            clinical_context=req.clinical_context,
+        )
+        references_used = [ref.filepath for ref in refs]
+        references = [
+            RagReferenceInfo(
+                filepath=ref.filepath,
+                title=getattr(ref, "title", ""),
+                area=ref.area,
+                similarity=round(float(ref.similarity), 4),
+            )
+            for ref in refs
+        ]
+        rag_status = "used" if refs else "no_hits"
+    except ValueError as e:
+        rag_status = "unavailable"
+        # RAG unavailable is not a hard error — Hermes can still draft
+    except Exception as e:
+        rag_status = "error"
+        # RAG error is not a hard error — Hermes can still draft
+
+    return PrepareResponse(
+        normalized=normalized,
+        prompt=prompt,
+        references_used=references_used,
+        references=references,
+        rag_status=rag_status,
+    )
+
+
+@app.post("/api/save-draft", response_model=DraftResponse)
+async def save_draft(req: SaveDraftRequest):
+    """Создать draft case из prepared JSON + assistant_draft.
+
+    Единая точка для сохранения черновика после prepare.
+    references_used сохраняются вместе с case.
+    """
+    if not req.assistant_draft.strip():
+        raise HTTPException(400, "assistant_draft обязателен")
+
+    prepared = req.prepared or {}
+    input_text = prepared.get("input_text", "")
+    if not input_text:
+        raise HTTPException(400, "prepared.input_text is required")
+
+    store = get_feedback_store()
+    record = store.create_case(
+        input_text=input_text,
+        assistant_draft=req.assistant_draft.strip(),
+        task=prepared.get("task", "conclusion"),
+        area=prepared.get("area", []),
+        clinical_context=prepared.get("clinical_context", ""),
+        comparison=prepared.get("comparison", False),
+        references_used=req.references_used or prepared.get("references_used", []),
+    )
+    return DraftResponse(
+        case_id=record.metadata.case_id,
+        draft=record.assistant_draft,
+        references_used=record.metadata.references_used,
+        path=str(store.drafts_dir / f"{record.metadata.case_id}.md"),
+    )
 
 
 @app.post("/api/draft", response_model=DraftResponse)
@@ -542,6 +683,71 @@ async def list_references():
         )
         for e in entries
     ]
+
+
+# --- Session state models ---
+
+class SessionStateRequest(BaseModel):
+    session_id: str = Field(..., description="Hermes session identifier")
+    case_id: str = Field("", description="Active RadiCT case_id")
+    state: str = Field("awaiting_feedback", description="Workflow state")
+    task: str = Field("conclusion", description="conclusion / description / description_and_conclusion")
+    rag_status: str = Field("unknown", description="used / no_hits / unavailable / error / unknown")
+
+
+class SessionStateResponse(BaseModel):
+    session_id: str
+    case_id: str = ""
+    state: str = ""
+    task: str = ""
+    rag_status: str = ""
+    updated_at: str = ""
+
+
+@app.post("/api/session/state", response_model=SessionStateResponse)
+async def set_session_state(req: SessionStateRequest):
+    """Связать Hermes session_id с активным RadiCT case_id."""
+    store = get_session_state_store()
+    entry = store.set_active_case(
+        session_id=req.session_id,
+        case_id=req.case_id,
+        state=req.state,
+        task=req.task,
+        rag_status=req.rag_status,
+    )
+    return SessionStateResponse(
+        session_id=req.session_id,
+        case_id=entry.get("case_id", ""),
+        state=entry.get("state", ""),
+        task=entry.get("task", ""),
+        rag_status=entry.get("rag_status", ""),
+        updated_at=entry.get("updated_at", ""),
+    )
+
+
+@app.get("/api/session/state/{session_id}", response_model=SessionStateResponse)
+async def get_session_state(session_id: str):
+    """Получить активный case_id для session_id."""
+    store = get_session_state_store()
+    entry = store.get_active_case(session_id)
+    if entry is None:
+        raise HTTPException(404, f"No active case for session: {session_id}")
+    return SessionStateResponse(
+        session_id=session_id,
+        case_id=entry.get("case_id", ""),
+        state=entry.get("state", ""),
+        task=entry.get("task", ""),
+        rag_status=entry.get("rag_status", ""),
+        updated_at=entry.get("updated_at", ""),
+    )
+
+
+@app.delete("/api/session/state/{session_id}")
+async def clear_session_state(session_id: str):
+    """Очистить активный case для session_id."""
+    store = get_session_state_store()
+    store.clear(session_id)
+    return {"status": "ok", "session_id": session_id}
 
 
 @app.get("/api/health")
