@@ -1,0 +1,11 @@
+{"event": "draft_created", "timestamp": "2026-07-13T07:45:33.632848+00:00", "case_id": "2026-07-13-001", "task": "conclusion"}
+{"event": "reference_saved", "timestamp": "2026-07-13T07:49:04.064365+00:00", "case_id": "2026-07-13-001", "reference_id": "2026-07-13-001"}
+{"event": "index_updated", "timestamp": "2026-07-13T07:49:04.064457+00:00", "reference_id": "2026-07-13-001"}
+{"event": "corrected", "timestamp": "2026-07-13T07:49:04.064541+00:00", "case_id": "2026-07-13-001"}
+{"event": "draft_created", "timestamp": "2026-07-13T08:46:56.454061+00:00", "case_id": "2026-07-13-003", "task": "conclusion"}
+{"event": "reference_saved", "timestamp": "2026-07-13T08:57:40.095473+00:00", "case_id": "2026-07-13-003", "reference_id": "2026-07-13-003"}
+{"event": "index_updated", "timestamp": "2026-07-13T08:57:40.095561+00:00", "reference_id": "2026-07-13-003"}
+{"event": "corrected", "timestamp": "2026-07-13T08:57:40.095645+00:00", "case_id": "2026-07-13-003"}
+{"event": "reference_saved", "timestamp": "2026-07-13T09:01:09.522361+00:00", "case_id": "2026-07-13-003", "reference_id": "2026-07-13-003"}
+{"event": "index_updated", "timestamp": "2026-07-13T09:01:09.522446+00:00", "reference_id": "2026-07-13-003"}
+{"event": "corrected", "timestamp": "2026-07-13T09:01:09.522522+00:00", "case_id": "2026-07-13-003"}

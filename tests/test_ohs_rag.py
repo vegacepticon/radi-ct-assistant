@@ -39,10 +39,10 @@ class ObsidianHybridRagTest(unittest.TestCase):
             self.assertTrue(reference_path.exists())
             self.assertTrue(legacy_path.exists())
             text = reference_path.read_text(encoding="utf-8")
-            self.assertIn("статус: true", text)
+            self.assertIn("reference_status: candidate", text)
             self.assertIn("задача: conclusion", text)
-            self.assertIn("Описание:", text)
-            self.assertIn("Заключение:", text)
+            self.assertIn("## Source input", text)
+            self.assertIn("## Target conclusion", text)
 
     def test_promotion_reports_reindex_failure_as_partial_success(self):
         """Reference saved + reindex failure: saved=True, index_updated=False."""
@@ -274,6 +274,202 @@ updated_at: 2026-07-09T12:00:00+03:00
 
             self.assertEqual(len(results), 1)
             self.assertIn("Актуальное", results[0].conclusion)
+
+    def test_dedup_by_filepath(self):
+        """OHS может вернуть один файл дважды (разные chunks) — берём только первый."""
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            ref = vault / "ref-1.md"
+            ref.write_text(
+                """---
+анамнез: синтетический пример
+область:
+  - ОГК
+статус: true
+задача: conclusion
+reference_status: active
+quality: standard
+---
+
+Описание:
+Синтетическое описание очага.
+
+Заключение:
+Синтетическое заключение.
+""",
+                encoding="utf-8",
+            )
+            # Same path returned twice
+            fake_output = json.dumps(
+                [
+                    {"path": "ref-1.md", "title": "ref-1", "score": 0.95},
+                    {"path": "ref-1.md", "title": "ref-1", "score": 0.90},
+                ],
+                ensure_ascii=False,
+            )
+
+            with patch("src.ohs.run_ohs", return_value=fake_output):
+                results = ObsidianHybridRetriever(vault_dir=vault).search(
+                    "синтетический запрос", area="ОГК", task="conclusion", top_k=5
+                )
+
+            self.assertEqual(len(results), 1, "Duplicate filepath should be removed")
+
+    def test_no_good_hits_when_score_below_absolute_threshold(self):
+        """Если лучший candidate ниже absolute threshold, возвращаем пустой список."""
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            ref = vault / "ref-low.md"
+            ref.write_text(
+                """---
+анамнез: синтетический пример
+область:
+  - ОГК
+статус: true
+задача: conclusion
+reference_status: active
+quality: standard
+---
+
+Описание:
+Синтетическое описание.
+
+Заключение:
+Синтетическое заключение.
+""",
+                encoding="utf-8",
+            )
+            # Score below absolute threshold (0.45)
+            fake_output = json.dumps(
+                [{"path": "ref-low.md", "title": "ref-low", "score": 0.30}],
+                ensure_ascii=False,
+            )
+
+            with patch("src.ohs.run_ohs", return_value=fake_output):
+                results = ObsidianHybridRetriever(vault_dir=vault).search(
+                    "нерелевантный запрос", area="ОГК", task="conclusion", top_k=5
+                )
+
+            self.assertEqual(len(results), 0, "Low-score candidates should be filtered")
+
+    def test_diversity_removes_near_identical_descriptions(self):
+        """Два файла с очень похожим description — оставляем только первый."""
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            ref1 = vault / "ref-a.md"
+            ref1.write_text(
+                """---
+анамнез: синтетический
+область:
+  - ОГК
+статус: true
+задача: conclusion
+reference_status: active
+quality: standard
+---
+
+Описание:
+Очаг S8 правого легкого 15 мм. Плевра свободна. Лимфоузлы не увеличены.
+
+Заключение:
+Очаг S8 правого легкого.
+""",
+                encoding="utf-8",
+            )
+            ref2 = vault / "ref-b.md"
+            ref2.write_text(
+                """---
+анамнез: синтетический
+область:
+  - ОГК
+статус: true
+задача: conclusion
+reference_status: active
+quality: standard
+---
+
+Описание:
+Очаг S8 правого легкого 15 мм. Плевра свободна. Лимфоузлы не увеличены.
+
+Заключение:
+Очаг S8 правого легкого без динамики.
+""",
+                encoding="utf-8",
+            )
+            # Both with high scores
+            fake_output = json.dumps(
+                [
+                    {"path": "ref-a.md", "title": "ref-a", "score": 0.95},
+                    {"path": "ref-b.md", "title": "ref-b", "score": 0.93},
+                ],
+                ensure_ascii=False,
+            )
+
+            with patch("src.ohs.run_ohs", return_value=fake_output):
+                results = ObsidianHybridRetriever(vault_dir=vault).search(
+                    "очаг S8 правого легкого", area="ОГК", task="conclusion", top_k=5
+                )
+
+            self.assertEqual(len(results), 1, "Near-identical descriptions should be deduplicated")
+
+    def test_diversity_keeps_different_descriptions(self):
+        """Два файла с разными descriptions — оставляем оба."""
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            ref1 = vault / "ref-x.md"
+            ref1.write_text(
+                """---
+анамнез: синтетический
+область:
+  - ОГК
+статус: true
+задача: conclusion
+reference_status: active
+quality: standard
+---
+
+Описание:
+Очаг S8 правого легкого 15 мм. Плевра свободна.
+
+Заключение:
+Очаг S8 правого легкого.
+""",
+                encoding="utf-8",
+            )
+            ref2 = vault / "ref-y.md"
+            ref2.write_text(
+                """---
+анамнез: синтетический
+область:
+  - ОГК
+статус: true
+задача: conclusion
+reference_status: active
+quality: standard
+---
+
+Описание:
+Пневмония нижней доли правого легкого. Экссудативный плеврит справа.
+
+Заключение:
+Пневмония. Плевральный выпот.
+""",
+                encoding="utf-8",
+            )
+            fake_output = json.dumps(
+                [
+                    {"path": "ref-x.md", "title": "ref-x", "score": 0.92},
+                    {"path": "ref-y.md", "title": "ref-y", "score": 0.88},
+                ],
+                ensure_ascii=False,
+            )
+
+            with patch("src.ohs.run_ohs", return_value=fake_output):
+                results = ObsidianHybridRetriever(vault_dir=vault).search(
+                    "патология легких", area="ОГК", task="conclusion", top_k=5
+                )
+
+            self.assertEqual(len(results), 2, "Different descriptions should both be kept")
 
 
 if __name__ == "__main__":

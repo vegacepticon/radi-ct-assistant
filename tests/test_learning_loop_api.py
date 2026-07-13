@@ -137,8 +137,8 @@ class LearningLoopApiTest(unittest.TestCase):
             reference_path = Path(promote_response.json()["reference_path"])
             self.assertTrue(reference_path.exists())
             reference_text = reference_path.read_text(encoding="utf-8")
-            self.assertIn("статус: true", reference_text)
-            self.assertIn("Заключение:", reference_text)
+            self.assertIn("reference_status: candidate", reference_text)
+            self.assertIn("## Target conclusion", reference_text)
 
     def test_promote_draft_and_phi_guard_return_400(self):
         with tempfile.TemporaryDirectory() as tmp:

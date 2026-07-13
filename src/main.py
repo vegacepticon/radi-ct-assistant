@@ -135,6 +135,7 @@ class PrepareRequest(BaseModel):
     comparison: bool = False
     mode: str = Field("fast")
     top_k: int = Field(5, ge=1, le=10)
+    output_mode: str = Field("full_systematic", description="full_systematic / findings_only")
 
 
 class PrepareResponse(BaseModel):
@@ -145,6 +146,8 @@ class PrepareResponse(BaseModel):
     references_used: list[str] = Field(default_factory=list)
     references: list[RagReferenceInfo] = Field(default_factory=list)
     rag_status: str = "unknown"  # used / no_hits / unavailable / error
+    # Phase 9: observability — version tracking
+    versions: dict[str, str] = Field(default_factory=dict)
 
 
 class SaveDraftRequest(BaseModel):
@@ -300,7 +303,8 @@ def _build_rag_context(req: RagContextRequest) -> RagContextResponse:
 
     try:
         retriever = get_retriever()
-        area = req.area[0] if req.area else ""
+        from .area_normalizer import normalize_area
+        area = normalize_area(req.area[0]) if req.area else ""
         references = retriever.search(
             req.input_text,
             area=area,
@@ -314,6 +318,8 @@ def _build_rag_context(req: RagContextRequest) -> RagContextResponse:
             references,
             mode=req.mode,
             clinical_context=req.clinical_context,
+            task=req.task,
+            areas=req.area,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -372,7 +378,8 @@ async def prepare_radi_ct(req: PrepareRequest):
 
     try:
         retriever = get_retriever()
-        area = req.area[0] if req.area else ""
+        from .area_normalizer import normalize_area
+        area = normalize_area(req.area[0]) if req.area else ""
         refs = retriever.search(
             req.input_text,
             area=area,
@@ -386,6 +393,9 @@ async def prepare_radi_ct(req: PrepareRequest):
             refs,
             mode=req.mode,
             clinical_context=req.clinical_context,
+            task=req.task,
+            areas=req.area,
+            output_mode=req.output_mode,
         )
         references_used = [ref.filepath for ref in refs]
         references = [
@@ -411,6 +421,14 @@ async def prepare_radi_ct(req: PrepareRequest):
         references_used=references_used,
         references=references,
         rag_status=rag_status,
+        versions={
+            "schema": "v2",
+            "prompt_builder": "2026-07",
+            "task_aware": "yes",
+            "area_templates": "2026-07",
+            "output_mode": req.output_mode,
+            "rag_backend": RAG_BACKEND,
+        },
     )
 
 

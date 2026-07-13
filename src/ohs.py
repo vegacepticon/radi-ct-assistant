@@ -29,6 +29,7 @@ from typing import Any
 from .config import OHS_COMMAND, OHS_TIMEOUT, REFERENCE_VAULT_DIR, TOP_K, MIN_SIMILARITY
 from .feedback_store import reference_lifecycle_score
 from .parser import parse_file
+from .area_normalizer import any_area_match, normalize_area
 
 
 @dataclass(slots=True)
@@ -193,6 +194,12 @@ class ObsidianHybridRetriever:
     #   task — conclusion / description / description_and_conclusion;
     #   top_k — сколько examples вернуть.
     # Выход: список OhsRetrievalResult, совместимый с build_prompt().
+    #
+    # Phase 6 improvements:
+    # - Dedup by filepath (OHS may return same file from different chunks)
+    # - Relative confidence: score gap top-1/top-2
+    # - Diversity: prefer non-identical examples (simple MMR-like)
+    # - no_good_hits: if best candidate below absolute threshold, return empty
     def search(
         self,
         query_description: str,
@@ -222,8 +229,22 @@ class ObsidianHybridRetriever:
         output = run_ohs(args, vault_dir=self.vault_dir)
         raw_results: list[dict[str, Any]] = json.loads(output or "[]")
 
-        candidates: list[OhsRetrievalResult] = []
+        # --- Dedup by filepath ---
+        # OHS может вернуть один файл несколько раз (разные chunks).
+        # Берём только первую (лучшую) запись для каждого файла.
+        seen_paths: set[str] = set()
+        deduped_results: list[dict[str, Any]] = []
         for raw in raw_results:
+            path = raw.get("path")
+            if not path:
+                continue
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            deduped_results.append(raw)
+
+        candidates: list[OhsRetrievalResult] = []
+        for raw in deduped_results:
             score = float(raw.get("score") or 0)
             if score < min_similarity:
                 continue
@@ -236,7 +257,12 @@ class ObsidianHybridRetriever:
             entry = parse_file(filepath)
             if not entry or not entry.is_quality:
                 continue
-            if area and entry.area != area:
+            # Multi-area matching: reference с [ОГК, ОБП, ОМТ] находится
+            # по запросу любой из трех областей.
+            ref_areas = entry.metadata.get("область", [])
+            if not isinstance(ref_areas, list):
+                ref_areas = [ref_areas] if ref_areas else []
+            if area and not any_area_match([area], ref_areas):
                 continue
 
             lifecycle_score = reference_lifecycle_score(entry.metadata)
@@ -252,5 +278,40 @@ class ObsidianHybridRetriever:
                     title=str(raw.get("title") or filepath.stem),
                 )
             )
+
+        # --- no_good_hits: absolute threshold ---
+        # Если лучший candidate ниже ABSOLUTE_MIN_SIMILARITY,
+        # возвращаем пустой список — лучше не дать examples, чем дать плохие.
+        ABSOLUTE_MIN_SIMILARITY = 0.45
+        if not candidates or candidates[0].similarity < ABSOLUTE_MIN_SIMILARITY:
+            return []
+
         candidates.sort(key=lambda item: item.similarity, reverse=True)
-        return candidates[:top_k]
+
+        # --- Diversity: simple MMR-like ---
+        # Если среди top результатов есть файлы с очень похожим description,
+        # оставляем только один из них. Простейшая эвристика: если два файла
+        # имеют description, совпадающий по первым 200 символам > 80%, 
+        # оставляем только тот, у кого выше score.
+        diverse: list[OhsRetrievalResult] = []
+        for cand in candidates:
+            is_duplicate = False
+            for kept in diverse:
+                # Сравниваем первые 200 символов description
+                desc_a = cand.description[:200].strip().lower()
+                desc_b = kept.description[:200].strip().lower()
+                if desc_a and desc_b:
+                    # Простой overlap: доля общих слов
+                    words_a = set(desc_a.split())
+                    words_b = set(desc_b.split())
+                    if words_a and words_b:
+                        overlap = len(words_a & words_b) / len(words_a | words_b)
+                        if overlap > 0.85:
+                            is_duplicate = True
+                            break
+            if not is_duplicate:
+                diverse.append(cand)
+            if len(diverse) >= top_k:
+                break
+
+        return diverse[:top_k]

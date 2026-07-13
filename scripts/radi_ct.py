@@ -216,6 +216,69 @@ def cmd_lessons(args: argparse.Namespace) -> None:
     print(json.dumps(lessons, ensure_ascii=False, indent=2))
 
 
+# Назначение: показать review queue — candidate references и lesson candidates.
+# Вход: опциональный --json для machine-readable output.
+# Выход: список candidates с metadata для ревью.
+def cmd_review(args: argparse.Namespace) -> None:
+    store = FeedbackStore(base_dir=STORE_BASE_DIR)
+    store.ensure_dirs()
+
+    # Candidate references (new promotions, not yet active/gold)
+    candidate_refs = store.list_references(status="candidate")
+
+    # Lesson candidates
+    lesson_files = []
+    for path in sorted(store.lesson_candidates_dir.glob("*.md")):
+        lesson_files.append({
+            "path": str(path),
+            "content": path.read_text(encoding="utf-8"),
+        })
+
+    review_queue = {
+        "candidate_references": candidate_refs,
+        "lesson_candidates": lesson_files,
+        "summary": {
+            "candidate_refs_count": len(candidate_refs),
+            "lesson_candidates_count": len(lesson_files),
+        },
+    }
+
+    if args.json:
+        print(json.dumps(review_queue, ensure_ascii=False, indent=2))
+    else:
+        print(f"=== Review Queue ===")
+        print(f"Candidate references: {len(candidate_refs)}")
+        for ref in candidate_refs:
+            print(f"  - {ref['reference_id']}: status={ref['reference_status']}, "
+                  f"quality={ref['quality']}, areas={ref.get('area', [])}")
+        print()
+        print(f"Lesson candidates: {len(lesson_files)}")
+        for lesson in lesson_files:
+            print(f"  - {lesson['path']}")
+        if not candidate_refs and not lesson_files:
+            print("  (empty — nothing to review)")
+
+
+# Назначение: одобрить candidate reference → active/gold.
+# Вход: reference_id и опциональный --quality.
+# Выход: обновленный reference lifecycle.
+def cmd_approve(args: argparse.Namespace) -> None:
+    store = FeedbackStore(base_dir=STORE_BASE_DIR)
+    new_quality = args.quality or "standard"
+    path = store.update_reference_lifecycle(
+        args.reference_id,
+        reference_status=args.status or "active",
+        quality=new_quality,
+    )
+    print_json({
+        "reference_id": args.reference_id,
+        "action": "approved",
+        "new_status": args.status or "active",
+        "new_quality": new_quality,
+        "path": str(path),
+    })
+
+
 # Назначение: заглушка для совместимости с roadmap.
 # Вход: ничего.
 # Выход: понятная ошибка, потому что index уже реализован отдельным scripts/index_base.py.
@@ -257,22 +320,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     promote = subparsers.add_parser("promote", help="Promote accepted/corrected case to reference base")
     promote.add_argument("case_id")
-    promote.add_argument("--reference-status", default="active", choices=["active", "gold", "deprecated", "needs_review", "rejected"])
+    promote.add_argument("--reference-status", default="candidate", choices=["candidate", "active", "gold", "deprecated", "needs_review", "rejected"])
     promote.add_argument("--quality", default="standard", choices=["gold", "high", "standard", "low"])
     promote.add_argument("--style-version", help="Style version label, e.g. 2026-07")
     promote.set_defaults(func=cmd_promote)
 
     references = subparsers.add_parser("references", help="List reference lifecycle metadata")
-    references.add_argument("--status", choices=["active", "gold", "deprecated", "needs_review", "rejected"])
+    references.add_argument("--status", choices=["candidate", "active", "gold", "deprecated", "needs_review", "rejected"])
     references.add_argument("--active-only", action="store_true")
     references.set_defaults(func=cmd_references)
 
     reference_update = subparsers.add_parser("reference-update", help="Update reference lifecycle metadata")
     reference_update.add_argument("reference_id")
-    reference_update.add_argument("--reference-status", choices=["active", "gold", "deprecated", "needs_review", "rejected"])
+    reference_update.add_argument("--reference-status", choices=["candidate", "active", "gold", "deprecated", "needs_review", "rejected"])
     reference_update.add_argument("--quality", choices=["gold", "high", "standard", "low"])
     reference_update.add_argument("--style-version")
     reference_update.set_defaults(func=cmd_reference_update)
+
+    review = subparsers.add_parser("review", help="Show review queue (candidate refs + lesson candidates)")
+    review.add_argument("--json", action="store_true", help="JSON output")
+    review.set_defaults(func=cmd_review)
+
+    approve = subparsers.add_parser("approve", help="Approve candidate reference → active/gold")
+    approve.add_argument("reference_id")
+    approve.add_argument("--status", default="active", choices=["active", "gold"])
+    approve.add_argument("--quality", choices=["gold", "high", "standard", "low"])
+    approve.set_defaults(func=cmd_approve)
 
     cases = subparsers.add_parser("cases", help="List cases")
     cases.add_argument("--status", choices=["draft", "accepted", "corrected"])
