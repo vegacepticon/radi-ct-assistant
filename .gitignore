@@ -26,4 +26,4 @@ data/feedback/lesson_candidates/*
 *.egg-info/
 dist/
 .venv/
-venv/
+venv/data/session_state.json
