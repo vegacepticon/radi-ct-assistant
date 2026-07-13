@@ -65,6 +65,7 @@ SCHEMA_VERSION_V2 = 2
 KNOWN_TASKS = {
     "conclusion",
     "description",
+    "finding_description",
     "description_and_conclusion",
     "edit_description",
     "edit_conclusion",
@@ -124,7 +125,12 @@ class TaskAwareReference:
     @property
     def has_description_target(self) -> bool:
         """Task требует target description."""
-        return self.task in ("description", "description_and_conclusion", "edit_description")
+        return self.task in (
+            "description",
+            "finding_description",
+            "description_and_conclusion",
+            "edit_description",
+        )
 
     @property
     def has_conclusion_target(self) -> bool:
@@ -254,6 +260,7 @@ def _resolve_task(metadata: dict[str, Any]) -> str:
     aliases = {
         "заключение": "conclusion",
         "описание": "description",
+        "описание_находки": "finding_description",
         "описание_и_заключение": "description_and_conclusion",
     }
     return aliases.get(task, "")

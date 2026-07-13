@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -16,12 +17,19 @@ from zoneinfo import ZoneInfo
 TaskName = Literal[
     "conclusion",
     "description",
+    "finding_description",
     "description_and_conclusion",
     "edit_description",
     "edit_conclusion",
 ]
 InputType = Literal["text", "markdown", "voice_transcript"]
 CaseStatus = Literal["draft", "accepted", "corrected"]
+
+
+def is_clarification_response(text: str) -> bool:
+    """True, если ответ — вопросы для диалога, а не финальная формулировка."""
+    normalized = text.strip().lower().replace("ё", "е")
+    return bool(re.match(r"^(?:#+\s*)?уточняющие\s+вопросы\s*:", normalized))
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 

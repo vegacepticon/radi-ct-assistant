@@ -208,7 +208,7 @@ class ObsidianHybridRetriever:
         top_k: int = TOP_K,
         min_similarity: float = MIN_SIMILARITY,
     ) -> list[OhsRetrievalResult]:
-        args = [
+        base_args = [
             "search",
             "--json",
             "--mode",
@@ -218,16 +218,40 @@ class ObsidianHybridRetriever:
             "--frontmatter",
             "статус:true",
         ]
-        if task:
-            args.extend(["--frontmatter", f"задача:{task}"])
-        if area:
-            # OHS frontmatter-фильтр по массивам может зависеть от версии, поэтому
-            # область дополнительно фильтруется после парсинга файла ниже.
-            pass
-        args.append(query_description)
 
-        output = run_ohs(args, vault_dir=self.vault_dir)
-        raw_results: list[dict[str, Any]] = json.loads(output or "[]")
+        # OHS применяет frontmatter-фильтры до своего --limit. Это критично для
+        # редких task-пулов: без task-фильтра немногочисленные finding_description
+        # references могут не попасть в первые N результатов среди заключений.
+        # Выполняем два совместимых запроса: v2 хранит `task`, legacy — `задача`.
+        task_aliases = {
+            "conclusion": "заключение",
+            "description": "описание",
+            "finding_description": "описание_находки",
+            "description_and_conclusion": "описание_и_заключение",
+        }
+        # Дополнительные schema-aware запросы нужны только новому редкому task.
+        # Для существующих задач сохраняем один широкий запрос: старые references
+        # могут вообще не иметь task-поля, и серверный фильтр исключил бы их.
+        task_filters = [""]
+        if task == "finding_description":
+            task_filters = [
+                f"task:{task}",
+                f"задача:{task_aliases[task]}",
+            ]
+
+        raw_results: list[dict[str, Any]] = []
+        for task_filter in task_filters:
+            args = list(base_args)
+            if task_filter:
+                args.extend(["--frontmatter", task_filter])
+            # Область по-прежнему фильтруется локально: OHS-поддержка массивов
+            # зависит от версии, а `areas`/`область` также различаются по schema.
+            args.append(query_description)
+            output = run_ohs(args, vault_dir=self.vault_dir)
+            parsed_output = json.loads(output or "[]")
+            if isinstance(parsed_output, list):
+                raw_results.extend(parsed_output)
+        raw_results.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
 
         # --- Dedup by filepath ---
         # OHS может вернуть один файл несколько раз (разные chunks).
@@ -257,9 +281,21 @@ class ObsidianHybridRetriever:
             entry = parse_file(filepath)
             if not entry or not entry.is_quality:
                 continue
+
+            # OHS filter — только prefilter: schema v1/v2 используют поля
+            # «задача» и «task». Локальная повторная проверка не позволяет
+            # смешивать task-пулы даже при различиях версий OHS.
+            ref_task = str(
+                entry.metadata.get("task")
+                or entry.metadata.get("задача")
+                or "conclusion"
+            )
+            if task and ref_task != task:
+                continue
+
             # Multi-area matching: reference с [ОГК, ОБП, ОМТ] находится
             # по запросу любой из трех областей.
-            ref_areas = entry.metadata.get("область", [])
+            ref_areas = entry.metadata.get("areas") or entry.metadata.get("область", [])
             if not isinstance(ref_areas, list):
                 ref_areas = [ref_areas] if ref_areas else []
             if area and not any_area_match([area], ref_areas):

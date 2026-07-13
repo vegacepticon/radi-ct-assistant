@@ -22,7 +22,7 @@ class ReferenceEntry:
     @property
     def area(self) -> str:
         """Область исследования, e.g. 'КТА ГМ'."""
-        area = self.metadata.get("область", [])
+        area = self.metadata.get("areas") or self.metadata.get("область", [])
         if isinstance(area, list):
             return area[0] if area else ""
         return str(area)
@@ -105,6 +105,26 @@ def parse_file(filepath: str | Path) -> ReferenceEntry | None:
         post = frontmatter.load(filepath)
         metadata = dict(post.metadata)
         body = post.content
+
+        # V2 references используют task-aware секции вместо legacy-маркеров
+        # «Описание/Заключение». Делегируем их единому schema parser, чтобы
+        # найденный OHS reference не отбрасывался после retrieval.
+        if int(metadata.get("schema_version", 1)) >= 2:
+            from .reference_schema import parse_reference
+
+            parsed = parse_reference(filepath)
+            if not parsed or not parsed.source_input.strip():
+                return None
+            target = parsed.target_conclusion or parsed.target_description
+            if not target.strip():
+                return None
+            return ReferenceEntry(
+                filepath=str(filepath),
+                metadata=metadata,
+                description=parsed.source_input.strip(),
+                conclusion=target.strip(),
+                recommendation=parsed.target_recommendations.strip(),
+            )
 
         # Разделяем: описание | заключение | рекомендовано
         # Маркеры в порядке приоритета (точные совпадения → вариации)

@@ -35,6 +35,7 @@ import yaml
 KNOWN_TASKS = {
     "conclusion",
     "description",
+    "finding_description",
     "description_and_conclusion",
     "edit_description",
     "edit_conclusion",
@@ -44,6 +45,7 @@ KNOWN_TASKS = {
 TASK_ALIASES = {
     "заключение": "conclusion",
     "описание": "description",
+    "описание_находки": "finding_description",
     "описание_и_заключение": "description_and_conclusion",
     "description_and_conclusion": "description_and_conclusion",
 }
@@ -378,9 +380,13 @@ def validate_reference(filepath: str | Path) -> ReferenceReport:
             "Файл содержит синтетические/тестовые данные",
         ))
 
-    # Проверка дублирующих маркеров
+    # Проверка дублирующих маркеров (v1 legacy format)
     concl_count = _count_section_markers(body, CONCLUSION_MARKERS)
     desc_count = _count_section_markers(body, DESCRIPTION_MARKERS)
+
+    # V2 markers — не считаются как дублирующие legacy маркеры
+    has_v2_conclusion = "## Target conclusion" in body
+    has_v2_description = "## Target description" in body
 
     if concl_count > 1:
         report.issues.append(ValidationIssue(
@@ -399,26 +405,31 @@ def validate_reference(filepath: str | Path) -> ReferenceReport:
         ))
 
     # Проверка task/target contract
+    # V2: ## Target conclusion / ## Target description markers
+    # V1: legacy Описание: / Заключение: markers
+    has_conclusion_target = has_v2_conclusion or concl_count > 0
+    has_description_target = has_v2_description or desc_count > 0
+
     if task == "conclusion":
-        if concl_count == 0:
+        if not has_conclusion_target:
             report.issues.append(ValidationIssue(
                 Severity.ERROR,
                 "missing_conclusion_target",
-                "Task=conclusion требует маркер 'Заключение' в теле",
+                "Task=conclusion требует маркер 'Заключение' или '## Target conclusion' в теле",
             ))
-    elif task == "description":
-        if desc_count == 0:
+    elif task in {"description", "finding_description"}:
+        if not has_description_target:
             report.issues.append(ValidationIssue(
                 Severity.ERROR,
                 "missing_description_target",
-                "Task=description требует маркер 'Описание' в теле",
+                f"Task={task} требует маркер 'Описание' или '## Target description' в теле",
             ))
     elif task == "description_and_conclusion":
-        if desc_count == 0 or concl_count == 0:
+        if not has_description_target or not has_conclusion_target:
             report.issues.append(ValidationIssue(
                 Severity.ERROR,
                 "missing_combined_targets",
-                "Task=description_and_conclusion требует оба маркера: 'Описание' и 'Заключение'",
+                "Task=description_and_conclusion требует оба маркера: описание и заключение (v1 или v2)",
             ))
 
     # Проверка запрещённых YAML-ключей

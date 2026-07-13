@@ -181,6 +181,7 @@ def _load_task_prompt(task: str) -> str:
     task_files = {
         "conclusion": "conclusion_from_description.txt",
         "description": "description_from_notes.txt",
+        "finding_description": "finding_description.txt",
         "description_and_conclusion": "description_and_conclusion_from_notes.txt",
         "edit_description": "description_from_notes.txt",
         "edit_conclusion": "conclusion_from_description.txt",
@@ -226,9 +227,16 @@ def _serialize_reference_for_task(ref: "RetrievalResult", task: str) -> str:
         except Exception:
             pass
 
-    # Fallback: v1 legacy формат через RetrievalResult fields
-    block = f"Описание:\n{ref.description}\n\n"
-    block += f"Заключение:\n{ref.conclusion}"
+    # Fallback для результатов без доступного v2 filepath.
+    # В conclusion-сценарии source — готовое описание, поэтому сохраняем
+    # привычную few-shot пару «Описание → Заключение». В description-семействе
+    # source — диктовка/черновые данные, а target — готовое описание.
+    if task in {"description", "finding_description", "edit_description"}:
+        block = f"Исходный текст:\n{ref.description}\n\n"
+        block += f"Описание:\n{ref.conclusion}"
+    else:
+        block = f"Описание:\n{ref.description}\n\n"
+        block += f"Заключение:\n{ref.conclusion}"
     if ref.recommendation:
         block += f"\n\nРекомендовано:\n{ref.recommendation}"
     return block
@@ -330,6 +338,47 @@ def build_description_prompt(
     return "\n\n".join(parts)
 
 
+def build_finding_description_prompt(
+    input_text: str,
+    references: list["RetrievalResult"],
+    mode: str = "fast",
+    clinical_context: str = "",
+    areas: list[str] | None = None,
+    output_mode: str = "findings_only",
+) -> str:
+    """Prompt для одной находки: диктовка → одна готовая формулировка.
+
+    Намеренно не подключает full-systematic area template и системный prompt
+    для заключения. При критическом дефиците данных допускается только
+    короткий блок уточняющих вопросов.
+    """
+    task_rules = _load_task_prompt("finding_description")
+
+    few_shot_parts = []
+    for i, ref in enumerate(references, 1):
+        block = f"--- Пример {i} ---\n"
+        block += _serialize_reference_for_task(ref, "finding_description")
+        few_shot_parts.append(block)
+
+    input_parts = []
+    if clinical_context:
+        input_parts.append(f"Клинический контекст: {clinical_context}")
+    if areas:
+        input_parts.append(f"Область: {', '.join(areas)}")
+    input_parts.append(f"Неструктурированная диктовка одной находки:\n{input_text}")
+
+    parts = [task_rules]
+    if few_shot_parts:
+        parts.append("\n\n".join(few_shot_parts))
+    parts.append("--- Текущая находка ---\n" + "\n\n".join(input_parts))
+    parts.append(
+        "Контракт ответа: только готовая формулировка одной находки без заголовка; "
+        "если критически не хватает данных — только «Уточняющие вопросы:» "
+        "и не более трех вопросов."
+    )
+    return "\n\n".join(parts)
+
+
 def build_description_and_conclusion_prompt(
     input_text: str,
     references: list["RetrievalResult"],
@@ -409,6 +458,11 @@ def build_prompt(
         return build_description_prompt(
             description, references, mode=mode, clinical_context=clinical_context,
             areas=areas, output_mode=output_mode,
+        )
+    elif task == "finding_description":
+        return build_finding_description_prompt(
+            description, references, mode=mode, clinical_context=clinical_context,
+            areas=areas, output_mode="findings_only",
         )
     elif task == "description_and_conclusion":
         return build_description_and_conclusion_prompt(

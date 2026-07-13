@@ -106,6 +106,9 @@ from scripts import radi_ct_api
 
 
 TASK_BY_TRIGGER = {
+    "ркт описание находки": "finding_description",
+    "ркт находка": "finding_description",
+    "ct finding description": "finding_description",
     "ркт заключение": "conclusion",
     "rct conclusion": "conclusion",
     "ct conclusion": "conclusion",
@@ -129,6 +132,7 @@ class WorkflowMessage:
     clinical_context: str = ""
     comparison: bool = False
     mode: str = "fast"
+    output_mode: str = "full_systematic"
     input_text: str = ""
     assistant_draft: str = ""
 
@@ -215,6 +219,9 @@ def apply_metadata_line(message: WorkflowMessage, line: str) -> None:
     elif key in {"тип ввода", "input type", "input_type"}:
         if value in {"text", "markdown", "voice_transcript"}:
             message.input_type = value
+    elif key in {"формат вывода", "output mode", "output_mode"}:
+        if value in {"full_systematic", "findings_only"}:
+            message.output_mode = value
 
 
 # Назначение: найти внутри body отдельный блок "Черновик ассистента:".
@@ -335,6 +342,8 @@ def parse_workflow_message(text: str) -> WorkflowMessage:
     detected_task = task_from_trigger(first_line)
     if detected_task:
         message.task = detected_task
+        if detected_task == "finding_description":
+            message.output_mode = "findings_only"
         remaining = lines[first_index + 1 :]
     else:
         # Если явного инициатора нет, считаем всё сообщение входным текстом
@@ -572,6 +581,9 @@ def cmd_rag_status(args: argparse.Namespace) -> None:
 # Выход: prompt + references_used; backend не вызывает LLM.
 def cmd_rag_context(args: argparse.Namespace) -> None:
     workflow_message = parse_workflow_message(read_text(args.input))
+    output_mode = args.output_mode or workflow_message.output_mode
+    if workflow_message.task == "finding_description":
+        output_mode = "findings_only"
     payload = {
         "input_text": workflow_message.input_text,
         "task": workflow_message.task,
@@ -579,6 +591,7 @@ def cmd_rag_context(args: argparse.Namespace) -> None:
         "clinical_context": workflow_message.clinical_context,
         "mode": workflow_message.mode,
         "top_k": args.top_k,
+        "output_mode": output_mode,
     }
     data = radi_ct_api.request_json("POST", "/api/rag/context", payload=payload)
     print_result(data, args.json, format_rag_context_response(data))
@@ -590,6 +603,9 @@ def cmd_rag_context(args: argparse.Namespace) -> None:
 # Hermes использует prompt для генерации черновика, затем вызывает save-draft.
 def cmd_prepare(args: argparse.Namespace) -> None:
     workflow_message = parse_workflow_message(read_text(args.input))
+    output_mode = args.output_mode or workflow_message.output_mode
+    if workflow_message.task == "finding_description":
+        output_mode = "findings_only"
     payload = {
         "input_text": workflow_message.input_text,
         "task": workflow_message.task,
@@ -598,6 +614,7 @@ def cmd_prepare(args: argparse.Namespace) -> None:
         "comparison": workflow_message.comparison,
         "mode": workflow_message.mode,
         "top_k": args.top_k,
+        "output_mode": output_mode,
     }
     data = radi_ct_api.request_json("POST", "/api/prepare", payload=payload)
     if args.json:
@@ -865,11 +882,21 @@ def build_parser() -> argparse.ArgumentParser:
     rag_context = subparsers.add_parser("rag-context", help="Build local RAG/few-shot context for Hermes")
     rag_context.add_argument("input", help="Message markdown/text file, or '-' for stdin")
     rag_context.add_argument("--top-k", type=int, default=5, help="Number of references to retrieve")
+    rag_context.add_argument(
+        "--output-mode",
+        choices=["full_systematic", "findings_only"],
+        help="Override output mode from message metadata",
+    )
     rag_context.set_defaults(func=cmd_rag_context)
 
     prepare = subparsers.add_parser("prepare", help="Unified operational entry point: parse + RAG + metadata")
     prepare.add_argument("input", help="Message markdown/text file, or '-' for stdin")
     prepare.add_argument("--top-k", type=int, default=5, help="Number of references to retrieve")
+    prepare.add_argument(
+        "--output-mode",
+        choices=["full_systematic", "findings_only"],
+        help="Override output mode from message metadata",
+    )
     prepare.set_defaults(func=cmd_prepare)
 
     save_draft = subparsers.add_parser("save-draft", help="Create draft case from prepared JSON + assistant draft")

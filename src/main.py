@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .parser import parse_directory
 from .config import BASE_DIR, RAG_BACKEND, REFERENCE_VAULT_DIR, REFERENCES_DIR
-from .case_schema import InputType, TaskName
+from .case_schema import InputType, TaskName, is_clarification_response
 from .feedback_store import FeedbackStore
 from .session_state import SessionStateStore
 
@@ -93,7 +93,10 @@ class ReferenceInfo(BaseModel):
 
 class DraftRequest(BaseModel):
     input_text: str = Field(..., description="Входной текст: описание, черновые находки или markdown")
-    task: TaskName = Field("conclusion", description="Задача learning loop")
+    task: TaskName = Field(
+        "conclusion",
+        description="conclusion / description / finding_description / description_and_conclusion",
+    )
     input_type: InputType = Field("markdown", description="text / markdown / voice_transcript")
     area: list[str] = Field(default_factory=list, description="Области исследования")
     clinical_context: str = Field("", description="Обезличенный клинический контекст")
@@ -105,11 +108,12 @@ class DraftRequest(BaseModel):
 
 class RagContextRequest(BaseModel):
     input_text: str = Field(..., description="Входной текст для поиска похожих reference-примеров")
-    task: TaskName = Field("conclusion", description="conclusion / description / description_and_conclusion")
+    task: TaskName = Field("conclusion", description="conclusion / description / finding_description / description_and_conclusion")
     area: list[str] = Field(default_factory=list, description="Области исследования; для фильтра используется первая")
     clinical_context: str = Field("", description="Обезличенный клинический контекст")
     mode: str = Field("fast", description="fast / analytical prompt mode")
     top_k: int = Field(5, ge=1, le=10, description="Сколько reference examples вернуть")
+    output_mode: str = Field("full_systematic", description="full_systematic / findings_only")
 
 
 class RagReferenceInfo(BaseModel):
@@ -129,7 +133,10 @@ class PrepareRequest(BaseModel):
     """Единая operational entry point: prepare = parse + RAG + metadata."""
 
     input_text: str = Field(..., description="Входной текст: описание, находки или markdown")
-    task: TaskName = Field("conclusion", description="conclusion / description / description_and_conclusion")
+    task: TaskName = Field(
+        "conclusion",
+        description="conclusion / description / finding_description / description_and_conclusion",
+    )
     area: list[str] = Field(default_factory=list)
     clinical_context: str = Field("")
     comparison: bool = False
@@ -320,6 +327,7 @@ def _build_rag_context(req: RagContextRequest) -> RagContextResponse:
             clinical_context=req.clinical_context,
             task=req.task,
             areas=req.area,
+            output_mode=req.output_mode,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -368,6 +376,7 @@ async def prepare_radi_ct(req: PrepareRequest):
         "clinical_context": req.clinical_context,
         "comparison": req.comparison,
         "mode": req.mode,
+        "output_mode": req.output_mode,
     }
 
     # RAG retrieval
@@ -453,10 +462,17 @@ async def save_draft(req: SaveDraftRequest):
 
     store = get_feedback_store()
     normalized = prepared.get("normalized", {})
+    task = prepared.get("task", normalized.get("task", "conclusion"))
+    if task == "finding_description" and is_clarification_response(req.assistant_draft):
+        raise HTTPException(
+            409,
+            "Ответ содержит уточняющие вопросы и не является draft: задайте их пользователю, "
+            "дополните вход и повторите prepare",
+        )
     record = store.create_case(
         input_text=input_text,
         assistant_draft=req.assistant_draft.strip(),
-        task=prepared.get("task", normalized.get("task", "conclusion")),
+        task=task,
         area=prepared.get("area", normalized.get("area", [])),
         clinical_context=prepared.get("clinical_context", normalized.get("clinical_context", "")),
         comparison=prepared.get("comparison", normalized.get("comparison", False)),
@@ -484,6 +500,12 @@ async def create_draft(req: DraftRequest):
     draft = req.assistant_draft.strip()
     if not draft:
         raise HTTPException(400, "assistant_draft обязателен в Hermes-only режиме")
+    if req.task == "finding_description" and is_clarification_response(draft):
+        raise HTTPException(
+            409,
+            "Ответ содержит уточняющие вопросы и не является draft: задайте их пользователю, "
+            "дополните вход и повторите запрос",
+        )
 
     store = get_feedback_store()
     record = store.create_case(

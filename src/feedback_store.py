@@ -28,6 +28,7 @@ from .case_schema import (
     FeedbackEvent,
     InputType,
     TaskName,
+    is_clarification_response,
     now_moscow_iso,
     short_text_hash,
 )
@@ -428,6 +429,13 @@ class FeedbackStore:
             raise ValueError("Only accepted/corrected cases can be promoted to references")
         if not record.roman_final.strip():
             raise ValueError("Cannot promote case without Roman final text")
+        if (
+            record.metadata.task == "finding_description"
+            and is_clarification_response(record.roman_final)
+        ):
+            raise ValueError(
+                "Clarifying questions are not a final finding description and cannot be promoted"
+            )
 
         reference_text = self._render_reference(
             record,
@@ -840,8 +848,8 @@ class FeedbackStore:
         if task == "conclusion":
             # source = описание (input_text), target = заключение
             target_conclusion = target_text.strip()
-        elif task == "description":
-            # source = диктовка (input_text), target = описание
+        elif task in {"description", "finding_description"}:
+            # source = диктовка (input_text), target = описание или формулировка одной находки
             target_description = target_text.strip()
         elif task == "description_and_conclusion":
             # source = диктовка, target = описание + заключение
