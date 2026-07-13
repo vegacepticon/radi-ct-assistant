@@ -27,3 +27,4 @@ data/feedback/lesson_candidates/*
 dist/
 .venv/
 venv/data/session_state.json
+data/session_state.json
