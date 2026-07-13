@@ -301,7 +301,8 @@ def _build_rag_context(req: RagContextRequest) -> RagContextResponse:
 
     try:
         retriever = get_retriever()
-        area = req.area[0] if req.area else ""
+        from .area_normalizer import normalize_area
+        area = normalize_area(req.area[0]) if req.area else ""
         references = retriever.search(
             req.input_text,
             area=area,
@@ -375,7 +376,8 @@ async def prepare_radi_ct(req: PrepareRequest):
 
     try:
         retriever = get_retriever()
-        area = req.area[0] if req.area else ""
+        from .area_normalizer import normalize_area
+        area = normalize_area(req.area[0]) if req.area else ""
         refs = retriever.search(
             req.input_text,
             area=area,

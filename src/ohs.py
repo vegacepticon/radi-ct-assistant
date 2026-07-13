@@ -29,6 +29,7 @@ from typing import Any
 from .config import OHS_COMMAND, OHS_TIMEOUT, REFERENCE_VAULT_DIR, TOP_K, MIN_SIMILARITY
 from .feedback_store import reference_lifecycle_score
 from .parser import parse_file
+from .area_normalizer import any_area_match, normalize_area
 
 
 @dataclass(slots=True)
@@ -236,7 +237,12 @@ class ObsidianHybridRetriever:
             entry = parse_file(filepath)
             if not entry or not entry.is_quality:
                 continue
-            if area and entry.area != area:
+            # Multi-area matching: reference с [ОГК, ОБП, ОМТ] находится
+            # по запросу любой из трех областей.
+            ref_areas = entry.metadata.get("область", [])
+            if not isinstance(ref_areas, list):
+                ref_areas = [ref_areas] if ref_areas else []
+            if area and not any_area_match([area], ref_areas):
                 continue
 
             lifecycle_score = reference_lifecycle_score(entry.metadata)
