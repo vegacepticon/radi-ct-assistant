@@ -314,6 +314,7 @@ def _build_rag_context(req: RagContextRequest) -> RagContextResponse:
             references,
             mode=req.mode,
             clinical_context=req.clinical_context,
+            task=req.task,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -386,6 +387,7 @@ async def prepare_radi_ct(req: PrepareRequest):
             refs,
             mode=req.mode,
             clinical_context=req.clinical_context,
+            task=req.task,
         )
         references_used = [ref.filepath for ref in refs]
         references = [

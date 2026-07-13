@@ -41,8 +41,8 @@ class ObsidianHybridRagTest(unittest.TestCase):
             text = reference_path.read_text(encoding="utf-8")
             self.assertIn("статус: true", text)
             self.assertIn("задача: conclusion", text)
-            self.assertIn("Описание:", text)
-            self.assertIn("Заключение:", text)
+            self.assertIn("## Source input", text)
+            self.assertIn("## Target conclusion", text)
 
     def test_promotion_reports_reindex_failure_as_partial_success(self):
         """Reference saved + reindex failure: saved=True, index_updated=False."""

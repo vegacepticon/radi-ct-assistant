@@ -39,8 +39,8 @@ class FeedbackStoreTest(unittest.TestCase):
             reference_path = Path(promotion_result.path)
             reference_text = reference_path.read_text(encoding="utf-8")
             self.assertIn("статус: true", reference_text)
-            self.assertIn("Описание:", reference_text)
-            self.assertIn("Заключение:", reference_text)
+            self.assertIn("## Source input", reference_text)
+            self.assertIn("## Target conclusion", reference_text)
 
             events = [
                 json.loads(line)
@@ -149,8 +149,10 @@ class FeedbackStoreTest(unittest.TestCase):
             promotion_result = store.promote_to_reference(record.metadata.case_id)
             reference_text = Path(promotion_result.path).read_text(encoding="utf-8")
 
-            self.assertIn("Заключение:\nФинальное короткое заключение Романа.", reference_text)
-            self.assertIn("Рекомендации:\nКонсультация профильного специалиста.", reference_text)
+            self.assertIn("## Target conclusion", reference_text)
+            self.assertIn("Финальное короткое заключение Романа.", reference_text)
+            self.assertIn("## Target recommendations", reference_text)
+            self.assertIn("Консультация профильного специалиста.", reference_text)
             self.assertNotIn("Старый ошибочный блок", reference_text)
 
     def test_list_cases_keeps_audit_history(self):

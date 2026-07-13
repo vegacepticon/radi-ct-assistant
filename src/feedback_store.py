@@ -747,9 +747,38 @@ class FeedbackStore:
             return conclusion, recommendation
         return conclusion_block, ""
 
+    # Назначение: разделить roman_final для combined task на description и conclusion.
+    # Вход: CaseRecord и предварительно извлечённый target_text.
+    # Выход: (description, conclusion) — раздельные блоки.
+    def _split_combined_target(self, record: CaseRecord, target_text: str) -> tuple[str, str]:
+        """
+        Для task=description_and_conclusion: разделить финальный текст на
+        описание и заключение по маркеру 'Заключение:'.
+        """
+        text = target_text.strip()
+        if not text:
+            return "", ""
+
+        conclusion_pattern = re.compile(
+            r"^(?:##\s*)?Заключение\s*:\s*$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        match = conclusion_pattern.search(text)
+        if match:
+            description = text[:match.start()].strip()
+            conclusion = text[match.end():].strip()
+            return description, conclusion
+
+        # Если маркер не найден — весь текст как description, conclusion пусто
+        return text, ""
+
     # Назначение: собрать markdown reference из финального case.
     # Вход: CaseRecord.
-    # Выход: текст reference-файла с минимальным безопасным YAML.
+    # Выход: текст reference-файла в task-aware v2 schema.
+    #
+    # Для task=conclusion: source=описание, target=заключение
+    # Для task=description: source=диктовка, target=описание
+    # Для task=description_and_conclusion: source=диктовка, target=описание+заключение
     def _render_reference(
         self,
         record: CaseRecord,
@@ -764,33 +793,51 @@ class FeedbackStore:
         if normalized_quality not in REFERENCE_QUALITY_SCORES:
             raise ValueError(f"quality must be one of: {sorted(REFERENCE_QUALITY_SCORES)}")
         now = now_moscow_iso()
+        task = record.metadata.task
+        target_text, recommendation = self._reference_target_text(record)
+
+        # V2 task-aware schema
+        from .reference_schema import render_v2_reference, SCHEMA_VERSION_V2
+
         metadata = {
             "анамнез": record.metadata.clinical_context or None,
             "область": record.metadata.area,
             "сравнение": record.metadata.comparison,
             "экстренность": False,
             "статус": normalized_status in REFERENCE_ACTIVE_STATUSES,
-            "задача": record.metadata.task,
+            "задача": task,
             "reference_status": normalized_status,
             "quality": normalized_quality,
             "style_version": style_version or now[:7],
             "created_at": now[:7],
             "updated_at": now[:7],
         }
-        frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
-        target_text, recommendation = self._reference_target_text(record)
-        parts = [
-            "---",
-            frontmatter,
-            "---",
-            "",
-            "Описание:",
-            record.input_text.strip(),
-            "",
-            "Заключение:",
-            target_text.strip(),
-            "",
-        ]
-        if recommendation.strip():
-            parts.extend(["Рекомендации:", recommendation.strip(), ""])
-        return "\n".join(parts)
+
+        # Определяем target блоки по task
+        target_description = ""
+        target_conclusion = ""
+        target_recommendations = recommendation.strip()
+
+        if task == "conclusion":
+            # source = описание (input_text), target = заключение
+            target_conclusion = target_text.strip()
+        elif task == "description":
+            # source = диктовка (input_text), target = описание
+            target_description = target_text.strip()
+        elif task == "description_and_conclusion":
+            # source = диктовка, target = описание + заключение
+            # roman_final может содержать оба блока
+            target_description, target_conclusion = self._split_combined_target(record, target_text)
+        else:
+            # edit_description / edit_conclusion / fallback → legacy behavior
+            target_conclusion = target_text.strip()
+
+        return render_v2_reference(
+            task=task,
+            areas=record.metadata.area,
+            source_input=record.input_text.strip(),
+            target_description=target_description,
+            target_conclusion=target_conclusion,
+            target_recommendations=target_recommendations,
+            metadata=metadata,
+        )
