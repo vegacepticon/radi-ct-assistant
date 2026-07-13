@@ -135,6 +135,7 @@ class PrepareRequest(BaseModel):
     comparison: bool = False
     mode: str = Field("fast")
     top_k: int = Field(5, ge=1, le=10)
+    output_mode: str = Field("full_systematic", description="full_systematic / findings_only")
 
 
 class PrepareResponse(BaseModel):
@@ -315,6 +316,7 @@ def _build_rag_context(req: RagContextRequest) -> RagContextResponse:
             mode=req.mode,
             clinical_context=req.clinical_context,
             task=req.task,
+            areas=req.area,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -388,6 +390,8 @@ async def prepare_radi_ct(req: PrepareRequest):
             mode=req.mode,
             clinical_context=req.clinical_context,
             task=req.task,
+            areas=req.area,
+            output_mode=req.output_mode,
         )
         references_used = [ref.filepath for ref in refs]
         references = [
