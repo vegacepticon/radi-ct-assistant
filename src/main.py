@@ -146,6 +146,8 @@ class PrepareResponse(BaseModel):
     references_used: list[str] = Field(default_factory=list)
     references: list[RagReferenceInfo] = Field(default_factory=list)
     rag_status: str = "unknown"  # used / no_hits / unavailable / error
+    # Phase 9: observability — version tracking
+    versions: dict[str, str] = Field(default_factory=dict)
 
 
 class SaveDraftRequest(BaseModel):
@@ -419,6 +421,14 @@ async def prepare_radi_ct(req: PrepareRequest):
         references_used=references_used,
         references=references,
         rag_status=rag_status,
+        versions={
+            "schema": "v2",
+            "prompt_builder": "2026-07",
+            "task_aware": "yes",
+            "area_templates": "2026-07",
+            "output_mode": req.output_mode,
+            "rag_backend": RAG_BACKEND,
+        },
     )
 
 
