@@ -39,7 +39,7 @@ class ObsidianHybridRagTest(unittest.TestCase):
             self.assertTrue(reference_path.exists())
             self.assertTrue(legacy_path.exists())
             text = reference_path.read_text(encoding="utf-8")
-            self.assertIn("статус: true", text)
+            self.assertIn("reference_status: candidate", text)
             self.assertIn("задача: conclusion", text)
             self.assertIn("## Source input", text)
             self.assertIn("## Target conclusion", text)

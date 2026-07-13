@@ -38,7 +38,8 @@ class FeedbackStoreTest(unittest.TestCase):
             self.assertTrue(promotion_result.index_updated or True)  # OHS may not be available in tests
             reference_path = Path(promotion_result.path)
             reference_text = reference_path.read_text(encoding="utf-8")
-            self.assertIn("статус: true", reference_text)
+            # Phase 7: new promotions get "candidate" status by default
+            self.assertIn("reference_status: candidate", reference_text)
             self.assertIn("## Source input", reference_text)
             self.assertIn("## Target conclusion", reference_text)
 
@@ -180,7 +181,7 @@ class FeedbackStoreTest(unittest.TestCase):
             store.accept_case(record.metadata.case_id)
             promotion_result = store.promote_to_reference(record.metadata.case_id, quality="high")
             reference_text = Path(promotion_result.path).read_text(encoding="utf-8")
-            self.assertIn("reference_status: active", reference_text)
+            self.assertIn("reference_status: candidate", reference_text)
             self.assertIn("quality: high", reference_text)
 
             updated_path = store.update_reference_lifecycle(
@@ -196,6 +197,87 @@ class FeedbackStoreTest(unittest.TestCase):
             self.assertIn("style_version: legacy", updated_text)
             active = store.list_references(include_inactive=False)
             self.assertEqual(active, [])
+
+    def test_new_promotion_gets_candidate_status(self):
+        """Phase 7: new promotions default to 'candidate', not 'active'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id)
+            promotion_result = store.promote_to_reference(record.metadata.case_id)
+            reference_text = Path(promotion_result.path).read_text(encoding="utf-8")
+            self.assertIn("reference_status: candidate", reference_text)
+            # candidate is NOT in active statuses → статус: false
+            self.assertIn("статус: false", reference_text)
+
+    def test_candidate_not_in_active_retrieval(self):
+        """Phase 7: candidate references are excluded from retrieval."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id)
+            store.promote_to_reference(record.metadata.case_id)
+            # candidate should NOT appear in active-only listing
+            active = store.list_references(include_inactive=False)
+            self.assertEqual(active, [])
+            # but SHOULD appear in full listing
+            all_refs = store.list_references()
+            self.assertEqual(len(all_refs), 1)
+            self.assertEqual(all_refs[0]["reference_status"], "candidate")
+
+    def test_approve_candidate_to_active(self):
+        """Phase 7: approve moves candidate → active."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id)
+            store.promote_to_reference(record.metadata.case_id)
+            # Approve → active
+            store.update_reference_lifecycle(
+                record.metadata.case_id,
+                reference_status="active",
+                quality="standard",
+            )
+            active = store.list_references(include_inactive=False)
+            self.assertEqual(len(active), 1)
+            self.assertEqual(active[0]["reference_status"], "active")
+
+    def test_lesson_candidate_has_provenance(self):
+        """Phase 7: lesson candidate includes provenance metadata."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание.",
+                assistant_draft="Черновик.",
+                area=["ОГК"],
+            )
+            store.correct_case(
+                record.metadata.case_id,
+                roman_final="Финал.",
+                feedback=["Обобщаемое правило: не использовать термин X."],
+                error_tags=["style_refinement"],
+                create_lesson_candidate=True,
+            )
+            lesson_path = store.lesson_candidates_dir / f"{record.metadata.case_id}.md"
+            self.assertTrue(lesson_path.exists())
+            content = lesson_path.read_text(encoding="utf-8")
+            self.assertIn(f"**Source case:** {record.metadata.case_id}", content)
+            self.assertIn("**Status:** unconfirmed", content)
+            self.assertIn("## Skill transfer criteria", content)
+            self.assertIn("## Provenance", content)
+            self.assertIn(f"source_case: {record.metadata.case_id}", content)
 
 
 if __name__ == "__main__":

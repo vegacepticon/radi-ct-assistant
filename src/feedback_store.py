@@ -67,7 +67,9 @@ FORBIDDEN_REFERENCE_KEYS = {
 }
 
 REFERENCE_ACTIVE_STATUSES = {"active", "gold"}
-REFERENCE_ALL_STATUSES = {"active", "gold", "deprecated", "needs_review", "rejected"}
+# Phase 7: candidate — новый promotion получает этот статус, не active.
+# Только после review можно повысить до active/gold.
+REFERENCE_ALL_STATUSES = {"candidate", "active", "gold", "deprecated", "needs_review", "rejected"}
 REFERENCE_QUALITY_SCORES = {"gold": 1.0, "high": 0.85, "standard": 0.65, "low": 0.35}
 
 
@@ -375,20 +377,37 @@ class FeedbackStore:
     # Назначение: создать markdown-файл candidate rule для ручного переноса в skill.
     # Вход: исправленный CaseRecord с feedback/error_tags.
     # Выход: путь к файлу в data/feedback/lesson_candidates.
+    #
+    # Phase 7: provenance — сохраняем source case ID, дату, task, area
+    # для audit trail при переносе правила в skill.
     def create_lesson_candidate(self, record: CaseRecord) -> Path:
         self.ensure_dirs()
         path = self.lesson_candidates_dir / f"{record.metadata.case_id}.md"
         lines = [
             f"# Lesson candidate {record.metadata.case_id}",
             "",
-            f"Task: {record.metadata.task}",
-            f"Area: {', '.join(record.metadata.area) if record.metadata.area else '-'}",
+            f"**Source case:** {record.metadata.case_id}",
+            f"**Date:** {now_moscow_iso()[:10]}",
+            f"**Task:** {record.metadata.task}",
+            f"**Area:** {', '.join(record.metadata.area) if record.metadata.area else '-'}",
+            f"**Status:** unconfirmed",
             "",
             "## Feedback",
             *[f"- {item}" for item in record.feedback],
             "",
             "## Error tags",
             *[f"- {tag}" for tag in record.error_tags],
+            "",
+            "## Skill transfer criteria",
+            "- [ ] Rule is generalizable (not case-specific)",
+            "- [ ] Repeated or explicitly confirmed by Roman",
+            "- [ ] Does not depend on one specific image",
+            "- [ ] Does not contradict existing rules",
+            "",
+            "## Provenance",
+            f"- source_case: {record.metadata.case_id}",
+            f"- created_at: {now_moscow_iso()[:7]}",
+            f"- feedback_hash: {short_text_hash(chr(10).join(record.feedback))}",
         ]
         path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
         return path
@@ -400,7 +419,7 @@ class FeedbackStore:
     def promote_to_reference(
         self,
         case_id: str,
-        reference_status: str = "active",
+        reference_status: str = "candidate",
         quality: str = "standard",
         style_version: str | None = None,
     ) -> PromotionResult:
@@ -782,7 +801,7 @@ class FeedbackStore:
     def _render_reference(
         self,
         record: CaseRecord,
-        reference_status: str = "active",
+        reference_status: str = "candidate",
         quality: str = "standard",
         style_version: str | None = None,
     ) -> str:

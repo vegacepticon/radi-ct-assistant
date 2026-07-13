@@ -50,7 +50,8 @@ TASK_ALIASES = {
 
 # Допустимые lifecycle статусы
 ACTIVE_STATUSES = {"active", "gold"}
-ALL_LIFECYCLE_STATUSES = {"active", "gold", "deprecated", "needs_review", "rejected"}
+# candidate — новый promotion, ещё не прошедший review
+ALL_LIFECYCLE_STATUSES = {"candidate", "active", "gold", "deprecated", "needs_review", "rejected"}
 
 # Допустимые quality значения
 QUALITY_SCORES = {"gold", "high", "standard", "low"}
