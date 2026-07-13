@@ -157,6 +157,59 @@ class ObsidianHybridRagTest(unittest.TestCase):
             self.assertTrue(data["available"])
             self.assertEqual(data["indexed"], 1)
 
+    def test_reference_vault_and_legacy_mirror_have_identical_content_after_promotion(self):
+        """P2: data/reference-vault/ and data/references/ must contain identical files after promotion."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADI_CT_AUTO_REINDEX"] = "0"
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id, save_as_reference=False)
+            promotion_result = store.promote_to_reference(record.metadata.case_id)
+
+            vault_path = Path(promotion_result.path)
+            legacy_path = store.references_dir / f"{record.metadata.case_id}.md"
+
+            self.assertTrue(vault_path.exists())
+            self.assertTrue(legacy_path.exists())
+            # Contents must be identical
+            self.assertEqual(
+                vault_path.read_text(encoding="utf-8"),
+                legacy_path.read_text(encoding="utf-8"),
+                "reference-vault and legacy references mirror diverged after promotion",
+            )
+
+    def test_reference_vault_and_legacy_mirror_after_lifecycle_update(self):
+        """P2: mirror equality must hold after lifecycle update."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADI_CT_AUTO_REINDEX"] = "0"
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id, save_as_reference=False)
+            store.promote_to_reference(record.metadata.case_id)
+
+            # Update lifecycle
+            store.update_reference_lifecycle(
+                record.metadata.case_id,
+                reference_status="deprecated",
+                quality="low",
+            )
+
+            vault_path = store.reference_vault_dir / f"{record.metadata.case_id}.md"
+            legacy_path = store.references_dir / f"{record.metadata.case_id}.md"
+            self.assertEqual(
+                vault_path.read_text(encoding="utf-8"),
+                legacy_path.read_text(encoding="utf-8"),
+                "reference-vault and legacy mirror diverged after lifecycle update",
+            )
+
     def test_ohs_retriever_excludes_deprecated_and_prefers_gold(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)

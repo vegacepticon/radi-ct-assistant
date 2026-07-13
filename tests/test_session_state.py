@@ -193,7 +193,48 @@ class PrepareAndSaveDraftTest(unittest.TestCase):
 # Import app lazily to avoid env issues at import time
 from src.main import app  # noqa: E402
 from src.radi_ct_guard import check_completion_invariant, FAIL_VISIBLE_MESSAGE  # noqa: E402
-from src.feedback_store import PromotionResult  # noqa: E402
+from src.feedback_store import PromotionResult, FeedbackStore  # noqa: E402
+from src.audit_log import AuditLog  # noqa: E402
+
+
+class AuditLogTest(unittest.TestCase):
+    def test_audit_log_writes_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLog(base_dir=Path(tmp))
+            audit.log_event("draft_created", case_id="test-001", task="conclusion")
+            audit.log_event("reference_saved", case_id="test-001", reference_id="test-001")
+            audit.log_event("index_updated", reference_id="test-001")
+            events = audit.read_events()
+            self.assertEqual(len(events), 3)
+            self.assertEqual(events[0]["event"], "draft_created")
+            self.assertEqual(events[0]["case_id"], "test-001")
+            self.assertEqual(events[2]["event"], "index_updated")
+
+    def test_audit_log_contains_no_medical_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLog(base_dir=Path(tmp))
+            audit.log_event("draft_created", case_id="test-001")
+            content = audit.audit_file.read_text(encoding="utf-8")
+            self.assertNotIn("Описание:", content)
+            self.assertNotIn("Заключение:", content)
+            self.assertNotIn("анамнез", content)
+
+    def test_feedback_store_logs_audit_events_on_promotion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADI_CT_AUTO_REINDEX"] = "0"
+            store = FeedbackStore(base_dir=Path(tmp))
+            record = store.create_case(
+                input_text="Синтетическое описание без идентификаторов.",
+                assistant_draft="Синтетическое заключение.",
+                area=["ОГК"],
+            )
+            store.accept_case(record.metadata.case_id, save_as_reference=False)
+            store.promote_to_reference(record.metadata.case_id)
+            events = store.audit_log.read_events()
+            event_types = [e["event"] for e in events]
+            self.assertIn("draft_created", event_types)
+            self.assertIn("accepted", event_types)
+            self.assertIn("reference_saved", event_types)
 
 
 class RadiCtGuardTest(unittest.TestCase):

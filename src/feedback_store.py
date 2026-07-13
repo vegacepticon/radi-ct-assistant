@@ -31,6 +31,7 @@ from .case_schema import (
     now_moscow_iso,
     short_text_hash,
 )
+from .audit_log import AuditLog
 from .config import AUTO_REINDEX_REFERENCES, BASE_DIR, REFERENCE_VAULT_DIR, REFERENCES_DIR
 
 CASE_SECTIONS = {
@@ -229,6 +230,11 @@ class FeedbackStore:
             return REFERENCE_VAULT_DIR
         return self.base_dir / "data" / "reference-vault"
 
+    @property
+    def audit_log(self) -> AuditLog:
+        """Локальный аудит-журнал RadiCT событий без медицинского текста."""
+        return AuditLog(base_dir=self.base_dir)
+
     # Назначение: создать новый case_id с датой и порядковым номером за день.
     # Вход: текущее содержимое data/cases.
     # Выход: строка вида "2026-07-06-001".
@@ -270,6 +276,11 @@ class FeedbackStore:
             assistant_draft=assistant_draft.strip(),
         )
         self.save_draft(record)
+        self.audit_log.log_event(
+            "draft_created",
+            case_id=case_id,
+            task=task,
+        )
         return record
 
     # Назначение: сохранить case в папку drafts.
@@ -300,6 +311,7 @@ class FeedbackStore:
         promotion_result = None
         if save_as_reference:
             promotion_result = self.promote_to_reference(case_id)
+        self.audit_log.log_event("accepted", case_id=case_id)
         return record, promotion_result
 
     # Назначение: сохранить исправленный Романом финал и feedback.
@@ -331,6 +343,7 @@ class FeedbackStore:
         promotion_result = None
         if save_as_reference:
             promotion_result = self.promote_to_reference(case_id)
+        self.audit_log.log_event("corrected", case_id=case_id)
         return record, promotion_result
 
     # Назначение: добавить запись в data/feedback/feedback_log.jsonl.
@@ -428,6 +441,19 @@ class FeedbackStore:
             index_error = reindex_result.error
 
         self.append_feedback_event(record, promoted_to_reference=True, promoted_to_skill=False)
+        self.audit_log.log_event(
+            "reference_saved",
+            case_id=case_id,
+            reference_id=case_id,
+        )
+        if index_updated:
+            self.audit_log.log_event("index_updated", reference_id=case_id)
+        else:
+            self.audit_log.log_event(
+                "capture_failed",
+                case_id=case_id,
+                reason_code="reindex_failed",
+            )
         return PromotionResult(
             saved=True,
             reference_id=case_id,
